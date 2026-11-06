@@ -1,5 +1,14 @@
 __pycache__/
 *.pyc
-runs/
-synth_dataset/
-moscato_dataset/
+.venv/
+.env
+.env.*
+!.env.example
+.DS_Store
+.pytest_cache/
+/runs/
+/wandb/
+/synth_dataset/
+/moscato_dataset/
+/features/
+/checkpoints/
