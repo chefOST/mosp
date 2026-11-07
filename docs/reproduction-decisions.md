@@ -16,8 +16,7 @@ This document separates published requirements from choices needed to make the a
   Code adapted from it must retain its copyright and permission notice.
 
 The authors' MOSCATO repository currently exposes documentation and data links,
-not a runnable model or checkpoint. This implementation is a ChefOST recreation;
-compatibility with unavailable official weights has not been established.
+not a runnable model or checkpoint. This implementation is a ChefOST recreation.
 
 ## Backbone and supervision
 
