@@ -1,5 +1,10 @@
 # Documentation
 
-- [Setup and current limitations](setup.md): source history, branch selection, synthetic commands and prerequisites for real-data runs.
-- [Experiment tracking](../weights_and_biases/README.md): intended W&B destinations and integration status.
-- [Shared evaluation](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md): ChefOST metric definitions.
+- [How the model works](model-explained.md): plain-language explanation for the writeup.
+- [Reproduction decisions](reproduction-decisions.md): published requirements, assumptions and unresolved author details.
+- [Setup and execution](setup.md): installation, validation, training, evaluation and inference.
+- [Data manifest](data-manifest.md): splits, vocabulary identity, features and explicit timeline mappings.
+- [Validation record](validation.md): executed checks and remaining real-data requirements.
+- [Feature sources](feature-sources.md): existing author-hosted arrays to validate before re-extraction.
+- [Experiment tracking](../weights_and_biases/README.md): intended W&B destinations; logging integration remains separate.
+- [ChefOST evaluation](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md): shared project metrics.

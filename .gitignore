@@ -12,3 +12,6 @@ __pycache__/
 /moscato_dataset/
 /features/
 /checkpoints/
+*.egg-info/
+/build/
+/dist/

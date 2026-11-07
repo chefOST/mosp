@@ -1,39 +1,44 @@
 # MOSP / ChefOST
 
-ChefOST evaluates object-state tracking in procedural cooking videos. This repository
-is for Multiple Object State Prediction (MOSP), the network in
-[MOSCATO (ICCV 2025)](https://openaccess.thecvf.com/content/ICCV2025/html/Zameni_MOSCATO_Predicting_Multiple_Object_State_Change_Through_Actions_ICCV_2025_paper.html),
-including its State–Action Interaction (SAI) module.
+This branch recreates the learned model in
+[MOSCATO (ICCV 2025)](https://www.khoury.northeastern.edu/home/eelhami/publications/iccv25_moscato.pdf):
+MS-TCN++ object-state prediction (MOSP), temporal action segmentation (TAS), and
+State–Action Interaction (SAI).
 
-`main` holds shared project guidance. Ryan's original implementation and history
-are preserved on [`ryan/main`](https://github.com/chefOST/mosp/tree/ryan/main), copied
-from `chefOST/oscar` at `003308d3747846580fabc646e887cdf4e662f94d` (August 21, 2026).
-Continue experiments on
-[`harrison/mosp-experiments`](https://github.com/chefOST/mosp/tree/harrison/mosp-experiments),
-which adds this guidance to Ryan's code. The Python package remains `moscato`.
+`harrison/mosp-reproduction` contains the new implementation. Ryan's original
+code and history remain on `ryan/main`; `main` contains shared guidance.
+The new package is `mosp`.
 
-The implementation includes training, evaluation and synthetic smoke-test utilities.
-No completed real-data run or paper reproduction has been verified. Start with
-[setup and current limitations](docs/setup.md) before running experiments.
+The model, joint losses, split checks, training, checkpoint loading, feature-only
+inference and state evaluation run end to end on synthetic data. Real MOSCATO
+training and published-result reproduction are not yet established. Several SAI
+details are unspecified in the paper; see [reproduction decisions](docs/reproduction-decisions.md).
 
-## Data and evaluation
+## Start
 
-Use [shared annotations and vocabularies](https://github.com/chefOST/chefOST-data)
-and [video access](https://github.com/chefOST/chefOST-data#videos).
-The current loader also requires precomputed features and dataset-layout alignment.
+With Python 3.10+:
 
-ChefOST uses frame-averaged multilabel precision and recall (detail), cosine
-similarity and state-change timing F1; follow the
-[shared evaluation specification](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md).
-Ryan's evaluator reports F1-max, mAP and segment F1; it does not implement all
-ChefOST metrics. Keep published results separate from ChefOST experiments.
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test]'
+python -m pytest -q
+python -m mosp.smoke --out runs/smoke
+```
 
-## Context
+The smoke test uses generated data and a small network. It checks execution,
+not benchmark quality. Full training requires verified I3D features, explicit
+train/validation/test IDs, and separate feature-to-state/action time mappings.
+See [setup](docs/setup.md) and the [manifest contract](docs/data-manifest.md).
 
-Read the [project goals](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#project-goals)
-and [MOSCATO paper notes](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#7-moscato).
-Follow the [branch and documentation guide](https://github.com/chefOST/.github/blob/main/CONTRIBUTING.md).
-See [W&B setup](weights_and_biases/README.md) for intended experiment destinations.
+## Understand and contribute
+
+Start with [how the model works](docs/model-explained.md) for a plain-language
+explanation suitable for preparing a writeup. Use the
+[shared data](https://github.com/chefOST/chefOST-data),
+[project goals](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#project-goals)
+and [evaluation specification](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md).
+The implemented paper-style metrics are distinct from ChefOST's project metrics.
 
 Details: [documentation](docs/README.md). Agents: [instructions](AGENTS.md).
-
+Follow the [branch guide](https://github.com/chefOST/.github/blob/main/CONTRIBUTING.md).

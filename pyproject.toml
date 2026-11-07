@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chefost-mosp"
+version = "0.1.0"
+description = "An explicit, testable reproduction of the MOSCATO MOSP/TAS/SAI method"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "torch>=2.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+license-files = ["third_party/MS-TCN2-LICENSE.txt"]
+
+[tool.setuptools.packages.find]
+include = ["mosp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
