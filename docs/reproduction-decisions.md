@@ -119,6 +119,12 @@ Ground-truth actions are training targets and inputs to training-only
 correlation estimation. They are not inference inputs. Held-out state labels
 are evaluation targets only.
 
+Unannotated action gaps and unknown action labels are currently ignored by the
+TAS loss (`-100`); no background category is invented. The inspected CMU action
+vocabulary has 29 named actions and no background entry. In the S30 real-input
+diagnostic, source segments supervise 714 of 2727 feature timepoints. The authors'
+gap/background policy needs confirmation before claiming identical TAS training.
+
 ## Split and model selection protocol
 
 There is no independently verified paper split manifest in this checkout.

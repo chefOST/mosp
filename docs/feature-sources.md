@@ -19,6 +19,12 @@ A 256-byte header read of
 confirmed float32 shape `[2727, 2048]`. MOSCATO's CMU `files_dict.json` names the
 same file under `egoprocel/features` and records `feature_len: 2727`.
 
+The full 22,339,712-byte file was subsequently downloaded for a diagnostic.
+The loader and a short, randomly initialized full-architecture forward pass
+succeeded; see [validation](validation.md). Matching names and lengths support
+the input contract but do not prove the original extraction checkpoint or exact
+timestamp convention.
+
 For [`P02-R01-PastaSalad.npy`](https://drive.google.com/file/d/197Re-sASxAryKEpxZ_p-o3DJh_taKfGA/view),
 the published file size is consistent with float32 `[17957, 2048]` and MOSCATO
 records `feature_len: 17957`. This shape was inferred from file size; its header

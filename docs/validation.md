@@ -22,11 +22,22 @@ results. The implementation has not been trained on real MOSCATO videos.
   do not resolve locally. This is why explicit splits and feature paths are required.
 - Independent implementation review checked the model/trainer interface,
   checkpoint selection, absence of test action inputs and metric aggregation.
+- One original public I3D feature file, `S30_Eggs_7150991-1.npy`, was downloaded
+  and validated against released CMU annotations: float32 `[2727,2048]`,
+  39 objects, 77 states, 29 actions, and 11 source action segments. The loader
+  produced `[2048,2727]` features and `[3003,2727]` state labels. All 87 available
+  ground-truth IDs were retained in its training-exclusion inventory.
+- The full default model produced finite outputs on an explicit 64-timepoint
+  slice of that real feature sequence. This used random weights, no optimization
+  and no evaluation scores. The SHA256 of the feature file is
+  `25d2845505a3e4ce4ec881d0ce68fd4ae575750a37be4c4f66375e0b28845e54`.
 
 Tests ran with the existing local VidOSC Python environment: PyTorch 2.15.0,
 NumPy 2.5.4, pytest 9.2.0, CPU. No new environment was installed. Synthetic run
 outputs live in ignored `runs/smoke-20261107-full-timeline/`; regenerate them with
 `python -m mosp.smoke --out runs/a-new-smoke-directory`.
+The ignored `runs/real-data-diagnostic-20261107-s30/` directory contains the
+real-input manifest, source hashes, validation output and diagnostic receipt.
 
 ## Before a real reproduction claim
 
