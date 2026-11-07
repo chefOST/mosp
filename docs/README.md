@@ -1,5 +1,5 @@
 # Documentation
 
-- [Setup and current limitations](setup.md): source history, branch selection, synthetic commands and prerequisites for real-data runs.
-- [Experiment tracking](../weights_and_biases/README.md): intended W&B destinations and integration status.
-- [Shared evaluation](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md): ChefOST metric definitions.
+- [Model setup](setup.md).
+- [Implementation documentation](https://github.com/chefOST/mosp/blob/harrison/mosp-reproduction/docs/README.md).
+- [W&B integration status](../weights_and_biases/README.md).
