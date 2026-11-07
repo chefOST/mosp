@@ -1,8 +1,6 @@
 # Reproduction decisions
 
-Status: November 7, 2026. This document separates published requirements from
-choices needed to make the available description executable. It does not report
-a completed real-data run or reproduced benchmark score.
+This document separates published requirements from choices needed to make the available description executable.
 
 ## Sources and implementation boundary
 
