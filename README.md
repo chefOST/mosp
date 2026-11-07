@@ -1,21 +1,14 @@
 # MOSP / ChefOST
 
-This branch recreates the learned model in
-[MOSCATO (ICCV 2025)](https://www.khoury.northeastern.edu/home/eelhami/publications/iccv25_moscato.pdf):
-MS-TCN++ object-state prediction (MOSP), temporal action segmentation (TAS), and
-State–Action Interaction (SAI).
+Implementation of MOSP, TAS and SAI from the
+[MOSCATO paper](https://www.khoury.northeastern.edu/home/eelhami/publications/iccv25_moscato.pdf).
+The Python package is `mosp`.
 
-`harrison/mosp-reproduction` contains the new implementation. Ryan's original
-code and history remain on `ryan/main`; `main` contains shared guidance.
-The new package is `mosp`.
+The model, training code and state evaluator are implemented. No real training
+or benchmark evaluation has been completed. Training/validation video lists
+and the required feature collection still need preparation.
 
-The model, joint losses, split checks, training, checkpoint loading, feature-only
-inference and state evaluation are implemented. No real training/validation split
-has been prepared, and no real MOSCATO training or benchmark reproduction has
-been completed. Several SAI
-details are unspecified in the paper; see [reproduction decisions](docs/reproduction-decisions.md).
-
-## Start
+## Install and check
 
 With Python 3.10+:
 
@@ -26,19 +19,11 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-The tests check isolated model, loss, metric and data-loading behavior;
-they do not launch training runs. Real training requires verified I3D features, explicit
-train/validation/test IDs, and separate feature-to-state/action time mappings.
-See [setup](docs/setup.md) and the [manifest contract](docs/data-manifest.md).
+See [setup](docs/setup.md) for current data availability and command requirements,
+[the model explanation](docs/model-explained.md) for the architecture, and
+[reproduction decisions](docs/reproduction-decisions.md) for unresolved paper details.
 
-## Understand and contribute
+The evaluator reports paper-style state metrics. ChefOST's separate metrics are
+specified in the [shared evaluation guide](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md).
 
-Start with [how the model works](docs/model-explained.md) for a plain-language
-explanation suitable for preparing a writeup. Use the
-[shared data](https://github.com/chefOST/chefOST-data),
-[project goals](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#project-goals)
-and [evaluation specification](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md).
-The implemented paper-style metrics are distinct from ChefOST's project metrics.
-
-Details: [documentation](docs/README.md). Agents: [instructions](AGENTS.md).
-Follow the [branch guide](https://github.com/chefOST/.github/blob/main/CONTRIBUTING.md).
+[Documentation](docs/README.md) · [Agent instructions](AGENTS.md)

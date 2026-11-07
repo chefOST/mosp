@@ -1,11 +1,8 @@
 # Setup and execution
 
-Use `harrison/mosp-reproduction`. This is a new implementation of the published
-MOSP/TAS/SAI method, not the authors' code or Ryan's earlier Transformer baseline.
-Ryan's two original commits are preserved on `ryan/main` at
-`003308d3747846580fabc646e887cdf4e662f94d`.
-
 ## Install and check
+
+With Python 3.10+:
 
 ```sh
 python3 -m venv .venv
@@ -14,93 +11,87 @@ python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 
-The tests check isolated model, loss, metric and data-loading behavior. They do
-not create trained checkpoints or run a training/validation experiment. No real
-training/validation dataset has been prepared. A real training run requires the
-inputs below and an explicitly selected video list.
+These are unit checks, not a training or benchmark run.
 
-## Prepare real inputs
+## Data status
 
 The [shared data repository](https://github.com/chefOST/chefOST-data) supplies
-annotations and vocabularies. Inspect a local release without changing it:
+annotations and vocabularies. No real training/validation split or complete
+feature collection has been prepared.
+
+One original I3D file, `S30_Eggs_7150991-1.npy`, is downloaded locally under
+`features/`. Its `[2727,2048]` features and matching annotations passed a loader
+check and a short model forward pass with random weights. This was not training
+or an accuracy evaluation. The receipt and source hashes are in
+`runs/real-data-diagnostic-20261107-s30/`; these local artifacts are not in Git.
+
+If the shared `MOSCATO` directory is next to this checkout, inspect it with:
 
 ```sh
-python -m mosp.prepare audit /path/to/MOSCATO
-python -m mosp.prepare validate /path/to/manifest.json
+python -m mosp.prepare audit ../MOSCATO
 ```
 
-Both commands print JSON. The audit inventories actual files and detects
-pseudo-label/ground-truth overlap; it does not invent a training split.
-Build the [explicit manifest](data-manifest.md) using verified feature provenance,
-split IDs and time mappings. The model does not extract I3D features or regenerate
-PLA pseudo-labels. The currently inspected local release lacks feature files and
-has fewer ground-truth videos than the paper's benchmark.
+The audit reports available files and overlapping video IDs. It does not select
+training videos. See [feature sources](feature-sources.md) for downloads and the
+[data manifest](data-manifest.md) for the required split and timeline mappings.
+The code consumes features and released pseudo-labels; it does not extract I3D
+features or regenerate pseudo-labels.
 
-## Train
+## CLI reference: requires prepared inputs
 
-Choose beta and the training budget under a documented validation protocol.
-The following variables intentionally have no assumed paper defaults:
+The following help commands work without a prepared dataset:
 
 ```sh
-python -m mosp.train --manifest /path/to/manifest.json --out runs/cmu-reproduction \
-  --epochs "$MOSP_EPOCHS" --beta "$MOSP_BETA"
+python -m mosp.prepare validate --help
+python -m mosp.train --help
+python -m mosp.evaluate --help
+python -m mosp.predict --help
 ```
 
-Architecture defaults follow the paper: four stages, ten layers each, 64 channels,
-Adam `1e-5`, positive state weight `5`. The feature dimension comes from the
-manifest; paper-comparable features must be verified I3D/Kinetics 2048-D.
-The default device is CPU; choose `--device cuda` explicitly for an available GPU.
-Each optimizer step processes one full video. The current implementation does
-not chunk long videos or make the temporal convolutions causal.
+### Validate data
 
-Training estimates correlations only from training videos and passes only
-features to the model. Action annotations supervise TAS. All manually annotated
-video IDs in the declared ground-truth source are barred from training.
+`mosp.prepare validate` takes a real manifest path and checks all declared splits,
+feature files, vocabularies and index mappings. There is no ready training
+manifest checked into this repository.
 
-Outputs: `run.json`, `manifest.snapshot.json`, `last.pt` and `selected.pt`.
-With validation videos, `selected.pt` minimizes fused-state validation BCE;
-otherwise it is the explicitly budgeted final epoch. Beta remains fixed during
-a run. Test data is never used for selection. Checkpoints save model settings,
-vocabulary/feature provenance, training and validation IDs, correlations,
-optimizer state and software revision. The manifest snapshot preserves its
-original relative paths and is a record, not a relocated data bundle.
+### Train
 
-For the no-SAI ablation, use `--without-sai --beta 0`. TAS remains supervised as
-in the paper's reported model setup. See `--help` for deliberate architectural
-overrides; changing them should be recorded as an experiment.
+`mosp.train` requires `--manifest`, a new `--out` directory, `--epochs` and
+`--beta`. Choose the epoch budget and beta before test evaluation.
 
-## Evaluate
+The paper specifies four stages with ten layers each, Adam `1e-5`, and positive
+state weight `5`. The 64 channels and dropout `0.5` are inherited from upstream
+MS-TCN++ defaults. Feature dimension comes from the manifest; matching the paper
+requires verified 2048-D I3D/Kinetics features.
 
-```sh
-python -m mosp.evaluate --manifest /path/to/manifest.json \
-  --checkpoint runs/cmu-reproduction/selected.pt --evaluation-timeline annotation \
-  --segment-threshold "$MOSP_SEGMENT_THRESHOLD" --gap-frames 10 \
-  --map-empty-classes exclude --out runs/cmu-reproduction/test-metrics.json
-```
+Training processes one full video per optimizer step, on CPU by default.
+`--device cuda` selects an available GPU. `--without-sai --beta 0` selects the
+no-SAI ablation. Correlations use training labels only; test action annotations
+are never model inputs.
 
-Full annotation scoring requires `evaluation_indices` for each held-out video.
-The ten-frame gap rule is then applied on that annotation timeline. Explicit
-`--evaluation-timeline feature` is available as a sampled diagnostic and must
-not be reported as full-frame benchmark evaluation.
+Outputs are `run.json`, `manifest.snapshot.json`, `last.pt` and `selected.pt`.
+With validation videos, the selected checkpoint minimizes validation fused-state
+BCE. Otherwise it is the requested final epoch. The manifest snapshot retains
+its original relative paths; it is a record, not a relocated data bundle.
 
-Segment threshold and mAP empty-class policy are explicit because the paper
-does not fully specify them. `exclude` averages AP over classes with positive
-targets; `zero` includes empty classes with AP zero. Scores are percentages.
-F1-max's test-threshold sweep is the paper's reported statistic, not a calibrated
-inference threshold. For EgoPER, run separate task models; task-average reporting
-remains a separate aggregation step. TAS benchmark scores and ChefOST-specific
-metrics are not included in this state-evaluation command.
+### Evaluate
 
-## Predict from features alone
+`mosp.evaluate` requires a manifest, checkpoint, `--evaluation-timeline`,
+`--segment-threshold`, `--gap-frames` and `--map-empty-classes`.
 
-```sh
-python -m mosp.predict --checkpoint runs/cmu-reproduction/selected.pt \
-  --features /path/to/video.npy --layout DT \
-  --feature-provenance /path/to/feature_provenance.json --out runs/video-predictions.npz
-```
+Use `annotation` timing with explicit `evaluation_indices` for full-frame
+scoring. `feature` timing is a sampled diagnostic. Gap length is measured on the
+chosen evaluation timeline. The mAP policy is `exclude` (skip classes without
+positives) or `zero` (include them with AP zero).
 
-The provenance JSON describes the actual input extractor and timeline and must
-equal the training manifest's `feature_provenance` object. Do not copy expected
-metadata onto unrelated features. No annotation path is accepted. Output arrays
-are `[time, class]` state/action probabilities; the companion JSON records the
-class order, feature/checkpoint hashes, model settings and provenance.
+The command reports state F1-max, mAP and segment F1 as percentages. It does not
+report TAS or ChefOST-specific metrics. EgoPER task-average reporting is a
+separate aggregation step. See [reproduction decisions](reproduction-decisions.md)
+for scoring choices and comparison limits.
+
+### Predict
+
+`mosp.predict` requires a checkpoint, a feature file, `--layout`, matching
+`--feature-provenance` JSON and a new `.npz` output path. It accepts no annotation
+files. Outputs are `[time,class]` state/action probabilities and a JSON record
+of class order, model settings, input hashes and provenance.

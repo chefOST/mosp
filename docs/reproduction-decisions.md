@@ -18,17 +18,12 @@ a completed real-data run or reproduced benchmark score.
   Code adapted from it must retain its copyright and permission notice.
 
 The authors' MOSCATO repository currently exposes documentation and data links,
-not a runnable model or checkpoint. Ryan's original `ryan/main` remains an
-independent, preserved scaffold. This implementation is a ChefOST recreation;
+not a runnable model or checkpoint. This implementation is a ChefOST recreation;
 compatibility with unavailable official weights has not been established.
 
 ## Backbone and supervision
 
-The paper specifies MS-TCN++ for both MOSP and TAS, four stages with ten dilated
-layers each, 2048-dimensional I3D/Kinetics features, Adam at `1e-5`, and positive
-state-label weight `5.0` (§5.1). MOSP uses sigmoid probabilities and weighted
-binary cross-entropy (Eq. 4); TAS uses action cross-entropy and smoothing.
-The complete objective adds MOSP, SAI and TAS losses (Eq. 7).
+See [the model explanation](model-explained.md) for the architecture and objectives.
 
 Implementation decisions:
 
@@ -36,9 +31,6 @@ Implementation decisions:
   maps and dropout `0.5` inherited from the pinned upstream implementation.
   Use ten layers in the initial stage: upstream `train.sh` requests eleven,
   whereas MOSCATO explicitly states ten in every stage.
-- Keep TAS softmax and MOSP sigmoid, including the probabilities passed between
-  their refinement stages. State combinations are multilabel; action classes
-  are mutually exclusive at a timepoint.
 - Follow upstream TAS smoothing: squared differences between adjacent
   log-softmax outputs, with the previous prediction detached, clipped at 16
   and weighted by `0.15`. Exclude padded or unlabelled positions.
@@ -107,13 +99,10 @@ not establish the RGB versus optical-flow composition, checkpoint, input crop,
 normalization, clip length, feature stride or timestamp convention. A
 2048-dimensional array alone therefore does not establish feature equivalence.
 
-Each feature manifest must record model provenance, dimension, `DT` or `TD`
-layout and a descriptive timeline. Per-video `state_indices` and `action_indices`
-explicitly map feature timepoints into their separately declared annotation
-timelines. These maps may be integer arrays or paths to such arrays. Do not
-infer alignment by stretching sequences to matching lengths or assuming the
-raw video rate equals the annotation rate. Timestamp-to-index conversion must
-be justified by the actual extractor and source annotations.
+The [manifest contract](data-manifest.md) defines the provenance and index maps.
+Do not infer alignment by stretching sequences to matching lengths or assuming
+the raw video rate equals the annotation rate. Timestamp-to-index conversion
+must be justified by the actual extractor and source annotations.
 
 Ground-truth actions are training targets and inputs to training-only
 correlation estimation. They are not inference inputs. Held-out state labels
@@ -128,9 +117,7 @@ gap/background policy needs confirmation before claiming identical TAS training.
 ## Split and model selection protocol
 
 There is no independently verified paper split manifest in this checkout.
-The manifest therefore requires explicit `train`, `validation` and `test`
-video IDs and `split_provenance`, including `paper_split_verified: false` until
-the original protocol is established. A pseudo-label file is not automatically
+A pseudo-label file is not automatically
 a training-only split: local pseudo-label bundles also contain ground-truth
 evaluation video IDs, which must be excluded from training.
 
