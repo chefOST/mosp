@@ -1,7 +1,3 @@
-# Project guidance
+# Agent instructions
 
-- Read README.md, then the linked documentation and paper notes relevant to the task.
-- Keep documentation concise; link canonical context instead of duplicating it.
-- Distinguish published results, ChefOST experiments and proposals. State the evaluation protocol used; paper metrics differ from ChefOST metrics.
-- Keep datasets, features, checkpoints, credentials and generated runs out of Git.
-- Newer user instructions and supplied announcements take precedence over older notes.
+Read this repository's [README on main](https://github.com/chefOST/mosp/blob/main/README.md) and the [shared contribution rules on main](https://github.com/chefOST/.github/blob/main/CONTRIBUTING.md). Follow their links for the project goals, relevant papers, data and evaluation definitions.

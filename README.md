@@ -1,13 +1,23 @@
 # MOSP / ChefOST
 
-Model code and setup are on
-[`harrison/mosp-reproduction`](https://github.com/chefOST/mosp/tree/harrison/mosp-reproduction).
-That branch implements the MOSP/TAS/SAI method from the
-[MOSCATO paper](https://www.khoury.northeastern.edu/home/eelhami/publications/iccv25_moscato.pdf)
-in the `mosp` Python package.
+MOSP research for object-state tracking in procedural cooking videos.
 
-`main` contains documentation only. No real training or benchmark evaluation
-has been completed; training/validation video lists and the feature collection
-still need preparation.
+## Shared guidance
 
-[Setup](docs/setup.md) · [Documentation](docs/README.md) · [Agent instructions](AGENTS.md)
+- [Organization guide](https://github.com/chefOST/.github/blob/main/profile/README.md).
+- [Project goals](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#project-goals) and [paper notes](https://github.com/chefOST/.github/blob/main/docs/PaperNotes.md#7-moscato).
+- [Evaluation definitions](https://github.com/chefOST/.github/blob/main/docs/Evaluation.md).
+- [Contribution rules](https://github.com/chefOST/.github/blob/main/CONTRIBUTING.md) and [agent instructions](AGENTS.md).
+
+## Data
+
+Get annotations and vocabularies from [chefOST-data](https://github.com/chefOST/chefOST-data). Get videos from the shared [R2 bucket](https://github.com/chefOST/chefOST-data#videos).
+
+## Outputs
+
+Log runs and outputs to the `chefOST` W&B projects:
+
+- Experiments: [`mosp-experiments`](https://wandb.ai/chefOST/mosp-experiments).
+- Full evaluations: [`mosp - full evals`](https://wandb.ai/chefOST/mosp%20-%20full%20evals).
+
+Use the exact destinations in [settings.json](weights_and_biases/settings.json).
