@@ -28,8 +28,8 @@ def manifest(tmp_path):
     np.save(tmp_path / "test.npy", np.arange(6, dtype=np.float32).reshape(3, 2))
     data = {
         "schema_version": 1,
-        "dataset": "synthetic",
-        "split_provenance": {"description": "Controlled fixture", "paper_split_verified": False},
+        "dataset": "CMU",
+        "split_provenance": {"description": "Loader unit-test fixture; not a real video split", "paper_split_verified": False},
         "vocabularies": {"objects": "objects.json", "states": "states.json", "actions": "actions.json"},
         "annotations": {"pseudo_labels": "pseudo.json", "ground_truth": "gt.json"},
         "feature_provenance": {"model": "fixture", "dimension": 2, "layout": "TD", "timeline": "3 explicit samples"},

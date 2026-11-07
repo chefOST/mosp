@@ -12,13 +12,12 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[test]'
 python -m pytest -q
-python -m mosp.smoke --out runs/smoke
 ```
 
-The last command requires a new output directory and creates synthetic features,
-labels, a two-epoch training run, checkpoints, metrics and feature-only predictions.
-These are software checks, not MOSCATO accuracy results. Run artifacts are ignored
-by Git. The smoke command needs no API key, remote compute or dataset download.
+The tests check isolated model, loss, metric and data-loading behavior. They do
+not create trained checkpoints or run a training/validation experiment. No real
+training/validation dataset has been prepared. A real training run requires the
+inputs below and an explicitly selected video list.
 
 ## Prepare real inputs
 

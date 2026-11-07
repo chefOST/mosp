@@ -10,8 +10,9 @@ code and history remain on `ryan/main`; `main` contains shared guidance.
 The new package is `mosp`.
 
 The model, joint losses, split checks, training, checkpoint loading, feature-only
-inference and state evaluation run end to end on synthetic data. Real MOSCATO
-training and published-result reproduction are not yet established. Several SAI
+inference and state evaluation are implemented. No real training/validation split
+has been prepared, and no real MOSCATO training or benchmark reproduction has
+been completed. Several SAI
 details are unspecified in the paper; see [reproduction decisions](docs/reproduction-decisions.md).
 
 ## Start
@@ -23,11 +24,10 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[test]'
 python -m pytest -q
-python -m mosp.smoke --out runs/smoke
 ```
 
-The smoke test uses generated data and a small network. It checks execution,
-not benchmark quality. Full training requires verified I3D features, explicit
+The tests check isolated model, loss, metric and data-loading behavior;
+they do not launch training runs. Real training requires verified I3D features, explicit
 train/validation/test IDs, and separate feature-to-state/action time mappings.
 See [setup](docs/setup.md) and the [manifest contract](docs/data-manifest.md).
 

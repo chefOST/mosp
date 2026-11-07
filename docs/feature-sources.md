@@ -21,7 +21,7 @@ same file under `egoprocel/features` and records `feature_len: 2727`.
 
 The full 22,339,712-byte file was subsequently downloaded for a diagnostic.
 The loader and a short, randomly initialized full-architecture forward pass
-succeeded; see [validation](validation.md). Matching names and lengths support
+succeeded; see [implementation checks](checks.md). Matching names and lengths support
 the input contract but do not prove the original extraction checkpoint or exact
 timestamp convention.
 

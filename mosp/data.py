@@ -120,8 +120,8 @@ class PreparedDataset:
         data = self.manifest
         if type(data.get("schema_version")) is not int or data["schema_version"] != SCHEMA_VERSION:
             raise ValueError("Manifest must explicitly set schema_version to 1")
-        if data.get("dataset") not in ("CMU", "EGTEA", "EgoPER", "synthetic"):
-            raise ValueError("dataset must identify CMU, EGTEA, EgoPER or synthetic")
+        if data.get("dataset") not in ("CMU", "EGTEA", "EgoPER"):
+            raise ValueError("dataset must identify CMU, EGTEA or EgoPER")
         if data["dataset"] == "EgoPER" and data.get("task") not in (
             "coffee", "oatmeal", "pinwheels", "quesadilla", "tea"
         ):
