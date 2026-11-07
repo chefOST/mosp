@@ -22,9 +22,9 @@ Sources: [MOSCATO paper](https://www.khoury.northeastern.edu/home/eelhami/public
 - Pipeline coverage: we consume supplied features and pseudo-labels. I3D
   extraction and PLA's LLM/VLM prompting, state refinement, point-of-change
   estimation and visibility detection are not implemented here.
-- Reporting coverage: our evaluator reports object-state metrics per manifest.
-  It does not report the paper's TAS accuracy, edit or segment-F1 scores, or
-  automatically aggregate the separately evaluated EgoPER tasks.
+- Repository boundary: this package implements training and prediction, with
+  no benchmark scoring or validation-based checkpoint selection. Those parts
+  of a reproduction must be implemented outside this repository.
 
 ## Unknown whether our implementation matches
 
@@ -83,38 +83,16 @@ Sources: [MOSCATO paper](https://www.khoury.northeastern.edu/home/eelhami/public
   loss (`-100`); no background category is added. In the inspected CMU example,
   only 714 of 2727 feature timepoints have action supervision. The authors'
   gap/background treatment is unknown.
-- Split equivalence: our explicitly selected train/validation/test IDs have not
-  been matched to the original paper splits. We exclude all declared manually
-  annotated video IDs from training, but the local ground-truth inventory is
+- Split equivalence: our required training and reserved-ID lists have not been
+  prepared and matched to the original paper splits. The loader excludes
+  declared manually annotated IDs from training, but that local inventory is
   incomplete relative to the paper.
 
-### Model selection
+### Training schedule
 
 - Beta and epochs: callers choose both before a run; beta is fixed during that
   run. The supplement reports a beta sweep and its best result without a clear
   selection split/criterion. The authors' epoch budget is also unspecified.
-- Checkpoint: with validation data, we select minimum unweighted BCE of fused
-  probabilities, pooled over feature-grid validation frames and object–state
-  pairs. Exact ties retain the earliest epoch. Without validation, we select
-  the requested final epoch. This is our implemented rule; its match to the
-  authors' checkpoint selection is unknown.
-
-### Evaluation
-
-- Segment threshold: callers set it independently of the F1-max threshold
-  sweep. The authors' segment-threshold selection procedure is unverified.
-- mAP: callers choose whether classes with no positives are excluded or receive
-  AP zero. Our AP uses step-integrated precision–recall with tied scores grouped
-  together. Equivalence to the authors' scorer is unverified.
-- Segment matching: separately for each video and object–state pair, predictions
-  are processed chronologically and matched to their highest-IoU target at
-  `IoU >= threshold`. If that target was already used, the prediction is a false
-  positive; we do not reassign it. This follows a common TAS convention, but the
-  authors' exact multilabel matching code is unavailable.
-- Postprocessing: gap merging changes thresholded segment predictions only;
-  frame F1-max and mAP use unchanged probabilities. The supplement does not
-  establish whether the authors also changed frame-metric predictions.
-- Evaluation timeline: full annotation scoring repeats/selects feature predictions
-  through explicit `evaluation_indices`; no probability interpolation is applied.
-  The authors' exact upsampling/alignment is unverified. Our optional feature-grid
-  scoring mode is a sampled diagnostic and may differ from full-frame scores.
+- Checkpoints: training saves the latest completed epoch without scoring it.
+  The authors' checkpoint-selection procedure remains unspecified; choosing a
+  checkpoint is an external responsibility, not logic implemented here.

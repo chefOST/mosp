@@ -42,13 +42,13 @@ def environment():
             "numpy": str(np.__version__)}
 
 
-def save_checkpoint(path, model, optimizer, *, epoch, metadata, manifest, correlations, selection):
+def save_checkpoint(path, model, optimizer, *, epoch, metadata, manifest, correlations):
     checkpoint = {"format_version": 1, "model_config": asdict(model.config),
                   "state_dict": model.state_dict(), "optimizer": optimizer.state_dict(),
                   "epoch": epoch, "metadata": metadata,
                   "manifest_sha256": file_sha256(manifest),
                   "correlations": {"before": correlations[0], "after": correlations[1]},
-                  "selection": selection, "environment": environment()}
+                  "environment": environment()}
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     torch.save(checkpoint, temporary)
@@ -63,11 +63,6 @@ def load_checkpoint(path, device="cpu"):
     correlations = checkpoint["correlations"]
     model = MOSPSystem(config, correlations["before"], correlations["after"])
     model.load_state_dict(checkpoint["state_dict"], strict=True)
+    # PyTorch inference mode disables dropout; it does not score predictions.
     model.to(device).eval()
     return model, checkpoint
-
-
-def validate_checkpoint_data(checkpoint, metadata):
-    for key in ("dataset", "task", "objects", "states", "actions", "vocabulary_snapshot", "feature_dimension", "feature_provenance"):
-        if checkpoint["metadata"].get(key) != metadata.get(key):
-            raise ValueError(f"Checkpoint/data mismatch in {key}; refusing to silently reinterpret features or classes")

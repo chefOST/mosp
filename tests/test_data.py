@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -7,6 +7,7 @@ import pytest
 from mosp.data import (
     IGNORE_ACTION,
     PreparedDataset,
+    Sample,
     compute_state_action_correlations,
     validate_manifest,
 )
@@ -25,7 +26,6 @@ def manifest(tmp_path):
     write_json(tmp_path / "pseudo.json", {"train": labels, "heldout": labels, "unselected_gt": labels})
     write_json(tmp_path / "gt.json", {"heldout": {"state": {"cup": [["empty"], ["full"], ["full"]]}}, "unselected_gt": labels})
     np.save(tmp_path / "train.npy", np.arange(6, dtype=np.float32).reshape(3, 2))
-    np.save(tmp_path / "test.npy", np.arange(6, dtype=np.float32).reshape(3, 2))
     data = {
         "schema_version": 1,
         "dataset": "CMU",
@@ -36,7 +36,6 @@ def manifest(tmp_path):
         "splits": {"train": ["train"], "validation": [], "test": ["heldout"]},
         "videos": {
             "train": {"feature_path": "train.npy", "state_source": "pseudo_labels", "state_indices": [0, 1, 2], "action_source": "pseudo_labels", "action_indices": [0, 1, 2], "action_segment_end": "exclusive"},
-            "heldout": {"feature_path": "test.npy", "state_source": "ground_truth", "state_indices": [0, 1, 2], "action_source": "none"},
         },
     }
     path = tmp_path / "manifest.json"
@@ -61,7 +60,6 @@ def test_sparse_vocab_aliases_and_explicit_feature_layout(manifest):
     np.testing.assert_array_equal(sample.actions, [0, 0, 0])
     assert sample.action_segments == ((0, 3, 0),)
     assert "ground_truth" not in dataset._annotation_cache
-    assert PreparedDataset(manifest, "test")[0].actions.tolist() == [IGNORE_ACTION] * 3
 
 
 def test_rejects_gt_training_even_when_id_not_in_selected_test(manifest):
@@ -140,7 +138,7 @@ def test_correlations_keep_same_label_action_boundaries_and_train_only(manifest)
     np.testing.assert_allclose(after, [[1 / 3, 2 / 3], [0, 0]])
     assert dataset[0].action_segments == ((0, 2, 0), (2, 6, 0))
     with pytest.raises(ValueError, match="train split only"):
-        compute_state_action_correlations(PreparedDataset(manifest, "test"))
+        compute_state_action_correlations(SimpleNamespace(split="test"))
 
 
 def test_correlation_midpoint_is_on_original_action_timeline(manifest):
@@ -153,44 +151,47 @@ def test_correlation_midpoint_is_on_original_action_timeline(manifest):
     np.testing.assert_array_equal(after[0], [0, 1])
 
 
-def test_validation_ground_truth_allowed_but_pseudo_test_rejected(manifest):
-    def move(data):
-        data["splits"]["validation"] = data["splits"]["test"]
-        data["splits"]["test"] = []
-    edit(manifest, move)
-    assert len(PreparedDataset(manifest, "validation")) == 1
-    def restore(data):
-        data["splits"]["test"] = data["splits"]["validation"]
-        data["splits"]["validation"] = []
-        data["videos"]["heldout"]["state_source"] = "pseudo_labels"
-    edit(manifest, restore)
-    with pytest.raises(ValueError, match="Test labels must come from ground_truth"):
-        PreparedDataset(manifest, "test")
+@pytest.mark.parametrize("split", ["validation", "test", "other"])
+def test_nontraining_loaders_are_rejected_before_accessing_sources(manifest, split):
+    with pytest.raises(ValueError, match="training data only"):
+        PreparedDataset(manifest.parent / "absent.json", split)
 
 
-def test_validate_loads_all_declared_samples(manifest):
+def test_validate_checks_training_only_and_counts_reserved_ids(manifest):
+    edit(manifest, lambda data: data["splits"].update(validation=["reserved_without_files"]))
     result = validate_manifest(manifest)
-    assert result["splits"]["train"] == {"videos": 1, "frames": 3}
-    assert result["splits"]["validation"] == {"videos": 0, "frames": 0}
-    assert result["splits"]["test"] == {"videos": 1, "frames": 3}
+    assert result["training"] == {"videos": 1, "frames": 3}
+    assert result["reserved_ids"] == {"validation": 1, "test": 1}
+    assert result["ground_truth_exclusion_ids"] == 2
     assert result["features_checked"] is True
+    assert set(json.loads(manifest.read_text())["videos"]) == {"train"}
 
 
-def test_evaluation_mapping_retains_full_gt_without_stretching(manifest):
-    gt = json.loads((manifest.parent / "gt.json").read_text())
-    gt["heldout"] = {"state": {"cup": [["empty"], ["full"], ["empty"], ["full"], ["full"]]}}
-    write_json(manifest.parent / "gt.json", gt)
-    edit(manifest, lambda data: data["videos"]["heldout"].update(state_indices=[0, 2, 4], evaluation_indices=[0, 0, 1, 1, 2]))
-    sample = PreparedDataset(manifest, "test")[0]
-    assert sample.states.shape == (2, 3)
-    assert sample.evaluation_states.shape == (2, 5)
-    np.testing.assert_array_equal(sample.evaluation_states, [[1, 0, 1, 0, 0], [0, 1, 0, 1, 1]])
-    np.testing.assert_array_equal(sample.evaluation_indices, [0, 0, 1, 1, 2])
-    assert PreparedDataset(manifest, "train")[0].evaluation_states is None
+def test_ground_truth_is_membership_only_not_target_data(manifest):
+    write_json(manifest.parent / "gt.json", {"heldout": {"state": "not a target array"}, "unselected_gt": None})
+    dataset = PreparedDataset(manifest, "train")
+    np.testing.assert_array_equal(dataset[0].states, [[1, 0, 0], [0, 1, 1]])
+    assert dataset.ground_truth_ids == {"heldout", "unselected_gt"}
+    assert "ground_truth" not in dataset._annotation_cache
+    with pytest.raises(ValueError, match="exclusion IDs only"):
+        dataset._source("ground_truth")
+    assert not any(name.startswith("evaluation_") for name in Sample.__dataclass_fields__)
 
 
-@pytest.mark.parametrize("indices,message", [([0, 1], "3 entries"), ([0, 1, 3], "exceed the feature timeline"), ([0, 2, 1], "chronological")])
-def test_evaluation_mapping_rejects_invalid_indices(manifest, indices, message):
-    edit(manifest, lambda data: data["videos"]["heldout"].update(evaluation_indices=indices))
-    with pytest.raises(ValueError, match=message):
-        PreparedDataset(manifest, "test")[0]
+@pytest.mark.parametrize("field", ["evaluation_indices", "evaluation_states"])
+def test_training_records_reject_removed_evaluation_fields(manifest, field):
+    edit(manifest, lambda data: data["videos"]["train"].update({field: [0, 1, 2]}))
+    with pytest.raises(ValueError, match="Evaluation fields are not supported"):
+        PreparedDataset(manifest, "train")
+
+
+def test_reserved_video_records_are_rejected(manifest):
+    edit(manifest, lambda data: data["videos"].update(heldout={"feature_path": "should_not_be_read.npy"}))
+    with pytest.raises(ValueError, match="exactly the train IDs"):
+        PreparedDataset(manifest, "train")
+
+
+def test_training_cannot_select_ground_truth_as_state_source(manifest):
+    edit(manifest, lambda data: data["videos"]["train"].update(state_source="ground_truth"))
+    with pytest.raises(ValueError, match="Training labels must come from pseudo_labels"):
+        PreparedDataset(manifest, "train")

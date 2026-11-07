@@ -10,7 +10,6 @@ import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .data import PreparedDataset, compute_state_action_correlations
 from .losses import joint_loss
@@ -22,8 +21,8 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True, help="New run directory; existing directories are refused")
-    p.add_argument("--epochs", type=int, required=True, help="Explicit budget; paper does not publish epoch selection")
-    p.add_argument("--beta", type=float, required=True, help="SAI fusion weight fixed before evaluating test data")
+    p.add_argument("--epochs", type=int, required=True, help="Fixed training budget")
+    p.add_argument("--beta", type=float, required=True, help="SAI probability fusion weight saved with the model")
     p.add_argument("--without-sai", action="store_true", help="MOSP-only output; requires beta=0")
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--positive-weight", type=float, default=5.0)
@@ -39,19 +38,6 @@ def parser():
     return p
 
 
-@torch.no_grad()
-def validation_loss(model, dataset, device):
-    model.eval()
-    total, elements = 0.0, 0
-    for sample in dataset:
-        features = torch.as_tensor(sample.features, dtype=torch.float32, device=device).unsqueeze(0)
-        labels = torch.as_tensor(sample.states, dtype=torch.float32, device=device).unsqueeze(0)
-        output = model(features)["probabilities"]
-        total += float(F.binary_cross_entropy(output.clamp(1e-7, 1 - 1e-7), labels, reduction="sum"))
-        elements += labels.numel()
-    return total / elements if elements else None
-
-
 def train(args):
     if args.epochs < 1 or args.threads < 1 or args.learning_rate <= 0:
         raise ValueError("Epochs, threads and learning rate must be positive")
@@ -64,12 +50,12 @@ def train(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
     train_data = PreparedDataset(args.manifest, "train")
-    validation = PreparedDataset(args.manifest, "validation")
     if len(train_data) == 0:
         raise ValueError("Training split is empty")
     metadata = dict(train_data.metadata)
     metadata["training_video_ids"] = list(train_data.video_ids)
-    metadata["validation_video_ids"] = list(validation.video_ids)
+    metadata["reserved_splits"] = {name: list(train_data.manifest["splits"][name])
+                                   for name in ("validation", "test")}
     config = MOSPConfig(num_state_classes=len(metadata["objects"]) * len(metadata["states"]),
                         num_actions=len(metadata["actions"]), beta=args.beta,
                         feature_dim=metadata["feature_dimension"], num_layers=args.layers,
@@ -84,17 +70,15 @@ def train(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     args.out.mkdir(parents=True)
     write_json(args.out / "manifest.snapshot.json", json.loads(args.manifest.read_text()))
-    selection = "minimum validation fused-state BCE" if len(validation) else "fixed final epoch; no validation selection"
     run = {"status": "running", "model_config": asdict(config), "metadata": metadata,
            "source_manifest": str(args.manifest.resolve()),
            "manifest_sha256": file_sha256(args.manifest), "seed": args.seed,
            "epochs_requested": args.epochs, "learning_rate": args.learning_rate,
            "positive_weight": args.positive_weight, "smoothing_weight": args.smoothing_weight,
-           "checkpoint_selection": selection, "device": args.device,
+           "checkpoint_policy": "latest completed training epoch; no score-based selection", "device": args.device,
            "environment": environment(), "history": [],
            "scope": "implementation run; not evidence of published-result reproduction"}
     write_json(args.out / "run.json", run)
-    best = float("inf")
     try:
         for epoch in range(1, args.epochs + 1):
             model.train()
@@ -119,16 +103,10 @@ def train(args):
                 for key, value in losses.items():
                     sums[key] = sums.get(key, 0.0) + float(value.detach())
             record = {"epoch": epoch, **{key: value / len(train_data) for key, value in sums.items()}}
-            val = validation_loss(model, validation, args.device) if len(validation) else None
-            record["validation_state_bce"] = val
             run["history"].append(record)
             save_checkpoint(args.out / "last.pt", model, optimizer, epoch=epoch, metadata=metadata,
-                            manifest=args.manifest, correlations=(before, after), selection="last epoch")
-            if val is None or val < best:
-                best = val if val is not None else best
-                save_checkpoint(args.out / "selected.pt", model, optimizer, epoch=epoch, metadata=metadata,
-                                manifest=args.manifest, correlations=(before, after), selection=selection)
-                run["selected_epoch"] = epoch
+                            manifest=args.manifest, correlations=(before, after))
+            run["last_completed_epoch"] = epoch
             write_json(args.out / "run.json", run)
             print(json.dumps(record), flush=True)
         run["status"] = "completed"

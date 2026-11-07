@@ -1,7 +1,9 @@
-"""Read-only release audit and explicit prepared-manifest validation.
+"""Read-only release audit and explicit training-manifest validation.
 
 No inferred split or temporal mapping is written. JSON goes to stdout unless an
-output path is explicitly supplied. Existing output files are never overwritten.
+output path is explicitly supplied. Reserved split IDs are checked only for
+separation; no reserved targets or scores are produced. Existing outputs are
+never overwritten.
 """
 
 from __future__ import annotations
@@ -97,9 +99,9 @@ def main(argv: list[str] | None = None) -> None:
     audit = commands.add_parser("audit", help="Read-only audit of a released MOSCATO directory")
     audit.add_argument("root", type=Path)
     audit.add_argument("--output", type=Path, help="Explicit new output file; default prints JSON")
-    validate = commands.add_parser("validate", help="Validate an explicitly authored version-1 manifest")
+    validate = commands.add_parser("validate", help="Check version-1 training inputs and reserved split IDs")
     validate.add_argument("manifest", type=Path)
-    validate.add_argument("--metadata-only", action="store_true", help="Skip array/label loading, not split or path validation")
+    validate.add_argument("--metadata-only", action="store_true", help="Skip training-array loading, not split or path checks")
     validate.add_argument("--output", type=Path, help="Explicit new output file; default prints JSON")
     args = parser.parse_args(argv)
     try:

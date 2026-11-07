@@ -1,8 +1,9 @@
-"""Explicit, split-safe adapters for the released MOSCATO annotations.
+"""Explicit, split-safe training adapters for released MOSCATO pseudo-labels.
 
-The version-1 manifest names every split, source file and feature-to-annotation
-index map. It never infers temporal alignment from array lengths. Features are
-returned as [D,T], labels as [O*S,T], and action supervision as [T].
+The version-1 manifest reserves validation/test IDs for an external scorer and
+provides source files and index maps only for training videos. It never infers
+alignment from array lengths. Features are [D,T], state targets [O*S,T], and
+action supervision [T]. Ground-truth files supply exclusion IDs only.
 """
 
 from __future__ import annotations
@@ -98,21 +99,19 @@ class Sample:
     action_segments: tuple[tuple[int, int, int], ...] = ()  # [start,end), action
     correlation_segments: tuple[tuple[int, int, int, int, int], ...] = ()
     # before [start,end), after [start,end), action; midpoint on SOURCE timeline
-    evaluation_states: np.ndarray | None = None  # [O*S,annotation_T], val/test only
-    evaluation_indices: np.ndarray | None = None  # annotation time -> feature index
 
 
 class PreparedDataset:
-    """Read one explicitly selected split without exposing test labels to training.
+    """Load training pseudo-labels; other split IDs are reserved metadata only.
 
     All ground-truth IDs in the declared ground-truth file are excluded from
-    training, including IDs not selected for this manifest's test split.
-    Ground-truth label contents are not retained by a training dataset.
+    training, including IDs not selected for the reserved test list. Ground-truth
+    label contents are never cached or converted into targets.
     """
 
     def __init__(self, manifest: str | Path, split: str):
-        if split not in SPLITS:
-            raise ValueError(f"Unknown split {split!r}; choose one of {SPLITS}")
+        if split != "train":
+            raise ValueError("PreparedDataset loads training data only; validation/test IDs are reserved for an external scorer")
         self.manifest_path = Path(manifest).expanduser().resolve()
         self.manifest = _json(self.manifest_path)
         self.split = split
@@ -150,8 +149,8 @@ class PreparedDataset:
             seen.update(ids)
         self.video_ids = list(split_lists[split])
         records = data.get("videos", {})
-        if not isinstance(records, dict) or set(records) != seen:
-            raise ValueError("videos must contain exactly the IDs explicitly assigned to splits")
+        if not isinstance(records, dict) or set(records) != set(self.video_ids):
+            raise ValueError("videos must contain exactly the train IDs; reserved splits need no video records")
 
         source_values = data.get("annotations", {})
         if not isinstance(source_values, dict):
@@ -185,35 +184,26 @@ class PreparedDataset:
             raise ValueError("feature_provenance.dimension must be a positive integer")
         if feature.get("layout") not in ("DT", "TD"):
             raise ValueError("feature_provenance.layout must explicitly be DT or TD")
-        for name, ids in split_lists.items():
-            for video_id in ids:
-                record = records[video_id]
-                if not isinstance(record, dict):
-                    raise ValueError(f"Video record must be an object: {video_id}")
-                state_source = record.get("state_source")
-                if state_source not in ("pseudo_labels", "ground_truth"):
-                    raise ValueError(f"Explicit state_source required: {video_id}")
-                if name == "train" and state_source != "pseudo_labels":
-                    raise ValueError(f"Training labels must come from pseudo_labels: {video_id}")
-                if name == "test" and state_source != "ground_truth":
-                    raise ValueError(f"Test labels must come from ground_truth: {video_id}")
-                if state_source == "ground_truth" and video_id not in ground_truth_ids:
-                    raise ValueError(f"Video missing from ground-truth source: {video_id}")
-                _path(base, record.get("feature_path"), f"features for {video_id}")
-                if "state_indices" not in record:
-                    raise ValueError(f"Explicit state_indices mapping required: {video_id}")
-                action_source = record.get("action_source")
-                if action_source not in ("pseudo_labels", "metadata", "none"):
-                    raise ValueError(f"Explicit action_source required: {video_id}")
-                if name == "train" and action_source == "none":
-                    raise ValueError(f"Training TAS supervision requires an action source: {video_id}")
-                if action_source != "none":
-                    if action_source not in self.sources:
-                        raise ValueError(f"Missing {action_source} action source: {video_id}")
-                    if "action_indices" not in record:
-                        raise ValueError(f"Explicit action_indices mapping required: {video_id}")
-                    if record.get("action_segment_end") not in ("inclusive", "exclusive"):
-                        raise ValueError(f"Explicit action_segment_end convention required: {video_id}")
+        for video_id in self.video_ids:
+            record = records[video_id]
+            if not isinstance(record, dict):
+                raise ValueError(f"Video record must be an object: {video_id}")
+            if record.get("state_source") != "pseudo_labels":
+                raise ValueError(f"Training labels must come from pseudo_labels: {video_id}")
+            if any(key.startswith("evaluation_") for key in record):
+                raise ValueError(f"Evaluation fields are not supported by the training adapter: {video_id}")
+            _path(base, record.get("feature_path"), f"features for {video_id}")
+            if "state_indices" not in record:
+                raise ValueError(f"Explicit state_indices mapping required: {video_id}")
+            action_source = record.get("action_source")
+            if action_source not in ("pseudo_labels", "metadata"):
+                raise ValueError(f"Training TAS supervision requires an explicit pseudo_labels or metadata action source: {video_id}")
+            if action_source not in self.sources:
+                raise ValueError(f"Missing {action_source} action source: {video_id}")
+            if "action_indices" not in record:
+                raise ValueError(f"Explicit action_indices mapping required: {video_id}")
+            if record.get("action_segment_end") not in ("inclusive", "exclusive"):
+                raise ValueError(f"Explicit action_segment_end convention required: {video_id}")
 
         self.metadata = {
             "schema_version": SCHEMA_VERSION,
@@ -242,8 +232,8 @@ class PreparedDataset:
             yield self[index]
 
     def _source(self, name: str) -> dict[str, Any]:
-        if self.split == "train" and name == "ground_truth":
-            raise ValueError("Ground-truth targets cannot be loaded by the training dataset")
+        if name not in ("pseudo_labels", "metadata"):
+            raise ValueError("Only training pseudo-label/action sources can be cached; ground truth supplies exclusion IDs only")
         if name not in self._annotation_cache:
             self._annotation_cache[name] = _json(self.sources[name])
         return self._annotation_cache[name]
@@ -289,18 +279,6 @@ class PreparedDataset:
         if not state_ann:
             raise ValueError(f"Empty state annotation timeline: {video_id}")
         target = self._state_targets(state_ann, state_indices, video_id)
-        evaluation_states = evaluation_indices = None
-        if self.split != "train" and "evaluation_indices" in record:
-            if any(not isinstance(timeline, list) for timeline in state_ann.values()):
-                raise ValueError(f"State annotations must be lists: {video_id}")
-            native_lengths = {len(timeline) for timeline in state_ann.values()}
-            if len(native_lengths) != 1 or not next(iter(native_lengths)):
-                raise ValueError(f"Full annotation evaluation requires one nonempty shared state timeline: {video_id}")
-            native_length = next(iter(native_lengths))
-            evaluation_indices = self._indices(record["evaluation_indices"], native_length, f"evaluation_indices for {video_id}")
-            if evaluation_indices[-1] >= length:
-                raise ValueError(f"evaluation_indices exceed the feature timeline: {video_id}")
-            evaluation_states = self._state_targets(state_ann, np.arange(native_length), video_id)
         actions = np.full(length, IGNORE_ACTION, dtype=np.int64)
         mapped_segments: list[tuple[int, int, int]] = []
         correlation_segments: list[tuple[int, int, int, int, int]] = []
@@ -346,7 +324,7 @@ class PreparedDataset:
                         before_end = int(np.searchsorted(action_indices, midpoint_floor, side="right"))
                         after_start = int(np.searchsorted(action_indices, midpoint_ceil, side="left"))
                         correlation_segments.append((left, before_end, after_start, right, action))
-        return Sample(video_id, features, target, actions, tuple(mapped_segments), tuple(correlation_segments), evaluation_states, evaluation_indices)
+        return Sample(video_id, features, target, actions, tuple(mapped_segments), tuple(correlation_segments))
 
     def _state_targets(self, state_ann: dict[str, Any], indices: np.ndarray, video_id: str) -> np.ndarray:
         target = np.zeros((len(self.objects.names) * len(self.states.names), len(indices)), dtype=np.float32)
@@ -393,12 +371,14 @@ def compute_state_action_correlations(dataset: PreparedDataset) -> tuple[np.ndar
 
 
 def validate_manifest(manifest: str | Path, *, check_features: bool = True) -> dict[str, Any]:
-    """Validate all declared splits and optionally load every sample, read-only."""
-    summary: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "splits": {}}
-    for split in SPLITS:
-        dataset = PreparedDataset(manifest, split)
-        frames = sum(sample.features.shape[1] for sample in dataset) if check_features else None
-        summary["splits"][split] = {"videos": len(dataset), "frames": frames}
-        summary["metadata"] = dataset.metadata
-    summary["features_checked"] = check_features
-    return summary
+    """Check training samples and reserved-ID separation without scoring anything."""
+    dataset = PreparedDataset(manifest, "train")
+    frames = sum(sample.features.shape[1] for sample in dataset) if check_features else None
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "training": {"videos": len(dataset), "frames": frames},
+        "reserved_ids": {name: len(dataset.manifest["splits"][name]) for name in ("validation", "test")},
+        "ground_truth_exclusion_ids": len(dataset.ground_truth_ids),
+        "metadata": dataset.metadata,
+        "features_checked": check_features,
+    }

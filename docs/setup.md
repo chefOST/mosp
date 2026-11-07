@@ -16,8 +16,8 @@ These are unit checks, not a training or benchmark run.
 ## Data status
 
 The [shared data repository](https://github.com/chefOST/chefOST-data) supplies
-annotations and vocabularies. No real training/validation split or complete
-feature collection has been prepared.
+annotations and vocabularies. No real training split or complete feature
+collection has been prepared.
 
 One original I3D file, `S30_Eggs_7150991-1.npy`, is downloaded locally under
 `features/`. Its `[2727,2048]` features and matching annotations passed a loader
@@ -44,20 +44,19 @@ The following help commands work without a prepared dataset:
 ```sh
 python -m mosp.prepare validate --help
 python -m mosp.train --help
-python -m mosp.evaluate --help
 python -m mosp.predict --help
 ```
 
 ### Validate data
 
-`mosp.prepare validate` takes a real manifest path and checks all declared splits,
-feature files, vocabularies and index mappings. There is no ready training
-manifest checked into this repository.
+`mosp.prepare validate` checks training feature files, vocabularies and index
+mappings, plus split-ID exclusion rules. It does not load held-out targets or
+score the model. There is no ready training manifest checked into this repository.
 
 ### Train
 
 `mosp.train` requires `--manifest`, a new `--out` directory, `--epochs` and
-`--beta`. Choose the epoch budget and beta before test evaluation.
+`--beta`. The epoch budget is fixed for the run; beta is saved with the model.
 
 The paper specifies four stages with ten layers each, Adam `1e-5`, and positive
 state weight `5`. The 64 channels and dropout `0.5` are inherited from upstream
@@ -69,25 +68,11 @@ Training processes one full video per optimizer step, on CPU by default.
 no-SAI ablation. Correlations use training labels only; test action annotations
 are never model inputs.
 
-Outputs are `run.json`, `manifest.snapshot.json`, `last.pt` and `selected.pt`.
-With validation videos, the selected checkpoint minimizes validation fused-state
-BCE. Otherwise it is the requested final epoch. The manifest snapshot retains
-its original relative paths; it is a record, not a relocated data bundle.
-
-### Evaluate
-
-`mosp.evaluate` requires a manifest, checkpoint, `--evaluation-timeline`,
-`--segment-threshold`, `--gap-frames` and `--map-empty-classes`.
-
-Use `annotation` timing with explicit `evaluation_indices` for full-frame
-scoring. `feature` timing is a sampled diagnostic. Gap length is measured on the
-chosen evaluation timeline. The mAP policy is `exclude` (skip classes without
-positives) or `zero` (include them with AP zero).
-
-The command reports state F1-max, mAP and segment F1 as percentages. It does not
-report TAS or ChefOST-specific metrics. EgoPER task-average reporting is a
-separate aggregation step. See [reproduction decisions](reproduction-decisions.md)
-for scoring choices and comparison limits.
+Outputs are `run.json`, `manifest.snapshot.json` and `last.pt`, containing the
+latest completed training epoch. Only training losses are recorded; there is no
+held-out scoring, early stopping or best-checkpoint selection. Model selection
+and benchmark scoring must run outside this repository. The manifest snapshot
+retains its original relative paths; it is a record, not a relocated data bundle.
 
 ### Predict
 
@@ -95,3 +80,6 @@ for scoring choices and comparison limits.
 `--feature-provenance` JSON and a new `.npz` output path. It accepts no annotation
 files. Outputs are `[time,class]` state/action probabilities and a JSON record
 of class order, model settings, input hashes and provenance.
+
+PyTorch's `model.eval()` disables training behavior such as dropout during
+prediction. It does not compare predictions with labels or compute scores.

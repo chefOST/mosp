@@ -55,8 +55,8 @@ state evidence, so SAI is not a guarantee of correctness.
 Training combines three objectives: state prediction against pseudo-labels,
 SAI state prediction against those same labels, and action classification plus
 temporal smoothing. Released pseudo-labels let us train without rerunning the
-paper's LLM/VLM label-generation pipeline. Manually annotated test states are
-reserved for evaluation.
+paper's LLM/VLM label-generation pipeline. Held-out labels are not model inputs.
+Scoring and model selection are outside this repository.
 
 This is offline sequence processing: temporal convolutions can use later frames,
 so the implementation is not a causal live tracker. Its outputs describe object
