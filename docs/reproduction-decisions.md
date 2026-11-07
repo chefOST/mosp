@@ -21,48 +21,22 @@ The authors' MOSCATO repository currently exposes documentation and data links,
 not a runnable model or checkpoint. This implementation is a ChefOST recreation;
 compatibility with unavailable official weights has not been established.
 
-## Backbone and supervision
+## Unverified loss conventions
 
-See [the model explanation](model-explained.md) for the architecture and objectives.
-
-Implementation decisions:
-
-- Use one prediction-generation stage and three refinements, with 64 feature
-  maps and dropout `0.5` inherited from the pinned upstream implementation.
-  Use ten layers in the initial stage: upstream `train.sh` requests eleven,
-  whereas MOSCATO explicitly states ten in every stage.
-- Follow upstream TAS smoothing: squared differences between adjacent
-  log-softmax outputs, with the previous prediction detached, clipped at 16
-  and weighted by `0.15`. Exclude padded or unlabelled positions.
-- Apply training supervision across the temporal stages, following upstream
-  multi-stage training. The MOSCATO paper does not spell out all stage-wise
-  loss reductions; record the implemented reduction with each run.
-- Use the conventional negative log-likelihood sign for binary cross-entropy.
-  Eq. 4 prints the log terms without a leading minus sign; minimizing those
-  terms literally would contradict the named loss.
-
-## SAI correlations: published rule
-
-Algorithm 1 counts positive pseudo-labels in the first and second halves of
-each annotated training action. For each action category, normalize each count
-tensor over **all object–state pairs**. This is not independent normalization
-per object and is not division by the number of frames in the action.
-
-Only training videos contribute to these tables. Preserve separate annotated
-segments even when adjacent segments share an action label. The algorithm's
-closed intervals include the midpoint in both half-counts; the implementation
-retains that convention. A zero-count action/direction yields a zero table,
-rather than invented state evidence.
-
-Eq. 5 combines after-state evidence from one action and before-state evidence
-from the next, scaled by TAS confidence. Eq. 6 makes SAI state probabilities
-constant between successive action midpoints. Eq. 8 blends probabilities:
-`final = (1 - beta) * MOSP + beta * SAI`.
+- Average MOSP binary cross-entropy over valid frames and object–state pairs
+  within each stage, then sum the stage losses. SAI contributes one mean BCE
+  term. MOSCATO does not specify these exact reductions or relative stage weights.
+- Exclude TAS smoothing pairs if either frame is padded or its action label is
+  ignored, and average over the remaining elements. This differs from upstream's
+  global mean of zero-masked entries; MOSCATO's handling is unverified.
 
 ## SAI details not fixed by the paper
 
 The following are explicit engineering choices, not verified author settings:
 
+- **Zero-count rows:** keep an action's before/after correlation row zero when
+  its total count is zero. Algorithm 1 does not specify this zero-denominator
+  case. Training rejects SAI if all correlation evidence is zero.
 - **Segments:** take consecutive runs of the final TAS argmax predictions.
   Represent predicted action intervals as `[start, end)` and put a state boundary
   at `floor((start + end) / 2)`.
