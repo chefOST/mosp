@@ -76,11 +76,12 @@ def _evaluation_requested(config):
     return requested
 
 
-def _wandb_run(config, stage, dataset=None):
+def _wandb_run(config, stage, dataset=None, *, group=None):
     import wandb
-    identity = f"{config['group']}:{stage}:{dataset or 'all'}"
+    group = config["group"] if group is None else group
+    identity = f"{group}:{stage}:{dataset or 'all'}"
     run = wandb.init(entity=WANDB_ENTITY, project=WANDB_PROJECT,
-                     group=config["group"], job_type=stage,
+                     group=group, job_type=stage,
                      name=f"{dataset or 'Pipeline'} / {stage}",
                      id=hashlib.sha256(identity.encode()).hexdigest()[:12], resume="allow",
                      config={**config, "dataset": dataset},
@@ -89,6 +90,45 @@ def _wandb_run(config, stage, dataset=None):
                                              x_disable_machine_info=True))
     print(json.dumps({"event": "wandb_run", "stage": stage, "dataset": dataset, "url": run.url}), flush=True)
     return run
+
+
+def _evaluation_references(record):
+    """Return references only, including for older completion records with scores."""
+    legacy_metrics = record.get("metrics", {})
+    values = {
+        "dataset": record.get("dataset"),
+        "checkpoint_sha256": record.get("checkpoint_sha256", legacy_metrics.get("checkpoint_sha256")),
+        "annotation_revision": record.get("annotation_revision", legacy_metrics.get("annotation_revision")),
+        "scope": record.get("scope", legacy_metrics.get("scope")),
+        "alignment_audit_path": record.get("alignment_audit_path", legacy_metrics.get("alignment_audit_path")),
+        "predictions_run_url": record.get("predictions_run_url", record.get("wandb_url")),
+        "predictions_artifact": record.get("predictions_artifact"),
+        "metrics_run_url": record.get("metrics_run_url"),
+        "metrics_artifact": record.get("metrics_artifact"),
+        "metrics_group": record.get("metrics_group"),
+    }
+    if any(value is not None and not isinstance(value, str) for value in values.values()):
+        raise ValueError("Evaluation references must contain strings, not nested result data")
+    epoch = record.get("checkpoint_epoch", legacy_metrics.get("checkpoint_epoch"))
+    if epoch is not None:
+        if type(epoch) is not int or epoch < 0:
+            raise ValueError("Checkpoint epoch must be a nonnegative integer")
+        values["checkpoint_epoch"] = epoch
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _pipeline_references(results):
+    """Keep score payloads out of pipeline return values and W&B summaries."""
+    output = {}
+    for dataset, result in results.items():
+        training = {key: result["training"][key]
+                    for key in ("dataset", "checkpoint_path", "wandb_url") if key in result["training"]}
+        if any(value is not None and not isinstance(value, str) for value in training.values()):
+            raise ValueError("Training references must contain strings")
+        output[dataset] = {"training": training}
+        if "evaluation" in result:
+            output[dataset]["evaluation"] = _evaluation_references(result["evaluation"])
+    return output
 
 
 def _stage_annotations(config):
@@ -208,24 +248,75 @@ def train_dataset(dataset, manifest_path, config):
 def evaluate_dataset(dataset, checkpoint, inventory, feature_manifest, config):
     import wandb
     from mosp.evaluate import evaluate_checkpoint
-    from mosp.runtime import write_json
+    from mosp.runtime import file_sha256, write_json
     volume.reload()
     output = _run_root(config) / dataset / "evaluation"
-    run = _wandb_run(config, "evaluate", dataset)
+    run = _wandb_run(config, "predictions", dataset)
     succeeded = False
     try:
-        run.summary["phase"] = "scoring held-out predictions"
+        run.summary["phase"] = "saving held-out predictions"
         if (output / "metrics.json").exists():
             metrics = json.loads((output / "metrics.json").read_text())
         else:
             metrics = evaluate_checkpoint(checkpoint, WORK / "annotations" / config["annotation_revision"],
                                           dataset, inventory, feature_manifest, output, device="cuda")
-        run.summary["metrics"] = metrics
-        artifact = wandb.Artifact(f"{config['group']}-{dataset.lower()}-predictions", type="predictions",
-                                  metadata={"dataset": dataset, "scope": "current curated held-out GT; sampled feature anchors"})
-        artifact.add_dir(str(output))
+        checkpoint_sha = file_sha256(checkpoint)
+        if (metrics.get("dataset") != dataset or metrics.get("checkpoint_sha256") != checkpoint_sha
+                or metrics.get("annotation_revision") != config["annotation_revision"]):
+            raise ValueError("Saved evaluation belongs to different model/data inputs")
+        predictions = sorted((output / "predictions").glob("*.npz"))
+        if not predictions:
+            raise ValueError("No prediction outputs are available to publish")
+        prediction_name = f"{config['group']}-{dataset.lower()}-predictions"
+        artifact = wandb.Artifact(prediction_name, type="predictions",
+                                  metadata={"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
+                                            "checkpoint_epoch": metrics.get("checkpoint_epoch"),
+                                            "annotation_revision": config["annotation_revision"],
+                                            "scope": "model predictions and alignment records"})
+        # Explicit membership prevents metrics.json (or other score files) from
+        # being copied into the prediction collection by a directory upload.
+        for prediction in predictions:
+            artifact.add_file(str(prediction), name="predictions/" + prediction.name)
+        artifact.add_file(str(output / "alignment_audit.json"), name="alignment_audit.json")
         run.log_artifact(artifact, aliases=["final"]).wait()
-        result = {"dataset": dataset, "metrics": metrics, "wandb_url": run.url}
+        result = {"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
+                  "checkpoint_epoch": metrics.get("checkpoint_epoch"),
+                  "annotation_revision": config["annotation_revision"],
+                  "scope": metrics.get("scope"),
+                  "alignment_audit_path": str(output / "alignment_audit.json"),
+                  "predictions_run_url": run.url, "predictions_artifact": prediction_name + ":final"}
+        run.summary.update({"prediction_videos": len(predictions), "checkpoint_sha256": checkpoint_sha,
+                            "annotation_revision": config["annotation_revision"],
+                            "predictions_artifact": result["predictions_artifact"]})
+        write_json(_run_root(config) / dataset / "predictions-complete.json", result)
+        volume.commit()
+        run.summary["phase"] = "complete"
+        succeeded = True
+    except Exception as exc:
+        run.summary["phase"] = "failed"
+        run.summary["error"] = str(exc)
+        raise
+    finally:
+        run.finish(exit_code=0 if succeeded else 1)
+    # Evaluation remains opt-in; when requested, score payloads have their own
+    # run group, job type, and artifact collection in the same configured project.
+    metrics_group = config["group"] + "-metrics"
+    run = _wandb_run(config, "metrics", dataset, group=metrics_group)
+    succeeded = False
+    try:
+        run.summary["phase"] = "publishing evaluation metrics"
+        run.summary["metrics"] = metrics
+        run.summary["predictions_run_url"] = result["predictions_run_url"]
+        run.summary["predictions_artifact"] = result["predictions_artifact"]
+        metric_name = f"{config['group']}-{dataset.lower()}-metrics"
+        artifact = wandb.Artifact(metric_name, type="evaluation-metrics",
+                                  metadata={"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
+                                            "checkpoint_epoch": metrics.get("checkpoint_epoch"),
+                                            "annotation_revision": config["annotation_revision"]})
+        artifact.add_file(str(output / "metrics.json"), name="metrics.json")
+        run.log_artifact(artifact, aliases=["final"]).wait()
+        result.update(metrics_run_url=run.url, metrics_artifact=metric_name + ":final",
+                      metrics_group=metrics_group)
         write_json(_run_root(config) / dataset / "evaluation-complete.json", result)
         volume.commit()
         run.summary["phase"] = "complete"
@@ -365,13 +456,13 @@ def dataset_pipeline(dataset, inventory, assets, config):
     completion = root / "evaluation-complete.json"
     if completion.exists():
         from mosp.runtime import file_sha256
-        evaluation = json.loads(completion.read_text())
+        evaluation = _evaluation_references(json.loads(completion.read_text()))
         if (evaluation.get("dataset") != dataset
-                or evaluation["metrics"]["checkpoint_sha256"] != file_sha256(result["checkpoint_path"])):
+                or evaluation.get("checkpoint_sha256") != file_sha256(result["checkpoint_path"])):
             raise ValueError("Completed evaluation belongs to a different checkpoint")
     else:
         evaluation = evaluate_dataset.remote(dataset, result["checkpoint_path"], inventory, all_features, config)
-    return {"training": result, "evaluation": evaluation}
+    return {"training": result, "evaluation": _evaluation_references(evaluation)}
 
 
 @app.function(image=coordinator_image, cpu=2, memory=8192, volumes={"/work": volume},
@@ -427,7 +518,7 @@ def orchestrate(config, recovery_revision=None):
         calls = {ds: dataset_pipeline.spawn(ds, inventory, assets, config) for ds in DATASETS}
         write_json(root / "dataset-calls.json", {ds: call.object_id for ds, call in calls.items()})
         volume.commit()
-        result = {ds: call.get() for ds, call in calls.items()}
+        result = _pipeline_references({ds: call.get() for ds, call in calls.items()})
         volume.reload()
         write_json(root / "complete.json", result)
         volume.commit()
