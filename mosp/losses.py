@@ -1,9 +1,10 @@
 """Joint MOSP, SAI, and TAS objectives (MOSCATO Equations 4 and 7).
 
 State BCE is applied at every MS-TCN++ stage, following upstream multistage
-supervision; SAI has one output. TAS smoothing follows pinned MS-TCN2: squared
-log-probability changes clipped to 16, detached preceding frame, weight 0.15.
-These explicit conventions are recorded in docs/reproduction-decisions.md.
+supervision; SAI has one output. TAS smoothing follows MS-TCN2 commit
+f423a9e65f4ccb1cd7322eb9f94946a19e787993: squared log-probability changes,
+detached preceding frame, clipping at 16, current-frame padding mask, global
+mean, and default weight 0.15. Action-label availability does not mask smoothing.
 """
 
 from __future__ import annotations
@@ -30,8 +31,9 @@ def joint_loss(outputs: Mapping[str, Tensor | None], state_targets: Tensor,
 
     Inputs have [K,B,C,T] state logits, [K,B,A,T] action logits, [B,C,T]
     binary/multilabel targets, and [B,T] action IDs. Optional valid_mask [B,T]
-    excludes padded frames from every objective; ignore_index excludes unknown
-    action labels from TAS only. No target labels are passed into model.forward.
+    supplies the padding mask. ignore_index excludes unknown action labels from
+    TAS cross-entropy only; smoothing is independent of those labels. No target
+    labels are passed into model.forward.
     """
     states = outputs["state_logits"]
     actions = outputs["action_logits"]
@@ -85,12 +87,15 @@ def joint_loss(outputs: Mapping[str, Tensor | None], state_targets: Tensor,
     for logits in actions:
         ce = F.cross_entropy(logits, safe_actions, ignore_index=ignore_index, reduction="none")
         ce_loss = ce_loss + _masked_mean(ce, action_valid.to(ce.dtype))
-        if length > 1:
-            log_probs = logits.log_softmax(dim=1)
-            delta = log_probs[:, :, 1:] - log_probs[:, :, :-1].detach()
-            smooth = delta.square().clamp(max=16)
-            pairs = (action_valid[:, 1:] & action_valid[:, :-1])[:, None, :]
-            smoothing_loss = smoothing_loss + smoothing_weight * _masked_mean(smooth, pairs.to(smooth.dtype))
+        log_probs = logits.log_softmax(dim=1)
+        delta = log_probs[:, :, 1:] - log_probs[:, :, :-1].detach()
+        smooth = delta.square().clamp(min=0, max=16)
+        # Preserve the upstream formula: current-frame padding mask only,
+        # with masked zeros included in the global mean. Do not use action_valid.
+        # A single-frame sequence has an empty mean, as in upstream; the trainer
+        # rejects its non-finite loss rather than silently replacing it with zero.
+        current_mask = valid_mask[:, None, 1:].to(smooth.dtype)
+        smoothing_loss = smoothing_loss + smoothing_weight * (smooth * current_mask).mean()
     tas_loss = ce_loss + smoothing_loss
     return {"total": mosp_loss + sai_loss + tas_loss, "mosp": mosp_loss,
             "sai": sai_loss, "tas": tas_loss, "tas_ce": ce_loss,
