@@ -237,6 +237,7 @@ def dataset_pipeline(dataset, inventory, assets, config):
     import wandb
     from mosp.cloud_data import prepare_training_manifest
     from mosp.data import validate_manifest
+    from mosp.pipeline_state import attach_saved_call, completed_feature_index
     from mosp.runtime import write_json
 
     volume.reload()
@@ -257,49 +258,66 @@ def dataset_pipeline(dataset, inventory, assets, config):
     training_call = None
     succeeded = False
     try:
+        previous_error = run.summary.get("error")
+        if previous_error:
+            run.summary["recovery/previous_error"] = previous_error
+        run.summary["error"] = None
         run.summary.update({"phase": "extracting training features", "training_videos": len(train_ids),
                             "test_videos": len(test_ids), "validation_videos": 0,
                             "paper_split_verified": False, "gpu_workers_shared_limit": 4})
-        for result in extract_one.map([records[v] for v in train_ids],
-                                      kwargs={"assets": assets, "config": config}, order_outputs=False):
-            feature_rows.append(result)
-            run.log({"features/train_complete": len(feature_rows), "features/train_total": len(train_ids)})
-        volume.reload()
-        train_features = {"videos": sorted(feature_rows, key=lambda x: x["video_id"])}
-        train_feature_path = root / "train-feature-index.json"
-        write_json(train_feature_path, train_features)
         prepared = root / "prepared"
         manifest = prepared / "manifest.json"
-        if manifest.exists():
-            validate_manifest(manifest, check_features=True)
+        feature_path = root / "feature-index.json"
+        cached_features = completed_feature_index(
+            feature_path, manifest, root / "training/run.json", dataset=dataset,
+            source_records=records, feature_root=WORK / "features" / assets["recipe_id"] / dataset,
+            annotation_revision=config["annotation_revision"], checkpoint_sha256=assets["checkpoint_sha256"])
+        if cached_features is not None:
+            all_features = cached_features
+            run.summary["phase"] = "reusing verified features; reattaching training"
+            run.log({"features/train_complete": len(train_ids), "features/train_total": len(train_ids),
+                     "features/test_complete": len(test_ids), "features/test_total": len(test_ids)})
         else:
-            if prepared.exists():
-                shutil.rmtree(prepared)  # Only incomplete, generated preparation for this run.
-            manifest = prepare_training_manifest(annotation_root, dataset, config["annotation_revision"],
-                                                  inventory, train_features, prepared,
-                                                  annotation_sha256=config["annotation_sha256"],
-                                                  action_segment_end="exclusive")
-        volume.commit()
+            for result in extract_one.map([records[v] for v in train_ids],
+                                          kwargs={"assets": assets, "config": config}, order_outputs=False):
+                feature_rows.append(result)
+                run.log({"features/train_complete": len(feature_rows), "features/train_total": len(train_ids)})
+            volume.reload()
+            train_features = {"videos": sorted(feature_rows, key=lambda x: x["video_id"])}
+            write_json(root / "train-feature-index.json", train_features)
+            if manifest.exists():
+                validate_manifest(manifest, check_features=True)
+            else:
+                if prepared.exists():
+                    shutil.rmtree(prepared)  # Only incomplete, generated preparation for this run.
+                manifest = prepare_training_manifest(annotation_root, dataset, config["annotation_revision"],
+                                                      inventory, train_features, prepared,
+                                                      annotation_sha256=config["annotation_sha256"],
+                                                      action_segment_end="exclusive")
+            volume.commit()
         run.summary["phase"] = "training started; extracting held-out features"
         call_path = root / "training-call.json"
         if call_path.exists():
-            training_call = modal.FunctionCall.from_id(json.loads(call_path.read_text())["call_id"])
+            training_call, training_call_id = attach_saved_call(call_path, modal.FunctionCall.from_id)
         else:
+            if cached_features is not None:
+                raise ValueError("Completed features lack their training handoff; refusing duplicate training")
             training_call = train_dataset.spawn(dataset, str(manifest), config)
-            write_json(call_path, {"call_id": training_call.object_id})
+            training_call_id = training_call.object_id
+            write_json(call_path, {"call_id": training_call_id})
             volume.commit()
-        run.summary["training_call_id"] = training_call.object_id
+        run.summary["training_call_id"] = training_call_id
         # Held-out extraction does not consult labels and overlaps GPU training.
-        test_rows = []
-        for result in extract_one.map([records[v] for v in test_ids],
-                                      kwargs={"assets": assets, "config": config}, order_outputs=False):
-            test_rows.append(result)
-            run.log({"features/test_complete": len(test_rows), "features/test_total": len(test_ids)})
-        volume.reload()
-        all_features = {"videos": sorted(feature_rows + test_rows, key=lambda x: x["video_id"])}
-        feature_path = root / "feature-index.json"
-        write_json(feature_path, all_features)
-        volume.commit()
+        if cached_features is None:
+            test_rows = []
+            for result in extract_one.map([records[v] for v in test_ids],
+                                          kwargs={"assets": assets, "config": config}, order_outputs=False):
+                test_rows.append(result)
+                run.log({"features/test_complete": len(test_rows), "features/test_total": len(test_ids)})
+            volume.reload()
+            all_features = {"videos": sorted(feature_rows + test_rows, key=lambda x: x["video_id"])}
+            write_json(feature_path, all_features)
+            volume.commit()
         artifact = wandb.Artifact(f"{config['group']}-{dataset.lower()}-inputs", type="dataset",
                                   metadata={"features_store": "Cloudflare R2", "recipe_id": assets["recipe_id"],
                                             "annotation_revision": config["annotation_revision"]})
@@ -316,13 +334,21 @@ def dataset_pipeline(dataset, inventory, assets, config):
         run.finish(exit_code=0 if succeeded else 1)
     result = training_call.get()
     volume.reload()
-    evaluation = evaluate_dataset.remote(dataset, result["checkpoint_path"], inventory, all_features, config)
+    completion = root / "evaluation-complete.json"
+    if completion.exists():
+        from mosp.runtime import file_sha256
+        evaluation = json.loads(completion.read_text())
+        if (evaluation.get("dataset") != dataset
+                or evaluation["metrics"]["checkpoint_sha256"] != file_sha256(result["checkpoint_path"])):
+            raise ValueError("Completed evaluation belongs to a different checkpoint")
+    else:
+        evaluation = evaluate_dataset.remote(dataset, result["checkpoint_path"], inventory, all_features, config)
     return {"training": result, "evaluation": evaluation}
 
 
 @app.function(image=coordinator_image, cpu=2, memory=8192, volumes={"/work": volume},
               secrets=secrets, max_containers=1, timeout=86400, retries=0)
-def orchestrate(config):
+def orchestrate(config, recovery_revision=None):
     from mosp.cloud_io import ensure_model_assets, s3_client, video_inventory
     from mosp.features import load_egoper_model
     from mosp.runtime import write_json
@@ -335,6 +361,16 @@ def orchestrate(config):
     run = _wandb_run(config, "pipeline")
     succeeded = False
     try:
+        previous_error = run.summary.get("error")
+        if previous_error:
+            run.summary["recovery/previous_error"] = previous_error
+        run.summary["error"] = None
+        if recovery_revision:
+            run.summary["recovery/controller_revision"] = recovery_revision
+            write_json(root / f"recovery-{recovery_revision[:12]}.json", {
+                "controller_revision": recovery_revision,
+                "original_configuration_preserved": True,
+                "function_call_id": modal.current_function_call_id()})
         run.summary["phase"] = "preparing pinned annotations and extractor"
         configuration_path = root / "configuration.json"
         if configuration_path.exists() and json.loads(configuration_path.read_text()) != config:
