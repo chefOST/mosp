@@ -107,7 +107,7 @@ def _stage_annotations(config):
 _MODEL_CACHE = None
 
 
-@app.function(image=image, gpu="L4", cpu=4, memory=16384, ephemeral_disk=32768,
+@app.function(image=image, gpu="L4", cpu=4, memory=16384,
               volumes={"/work": volume}, secrets=secrets, max_containers=4,
               scaledown_window=60, timeout=86400, startup_timeout=1200, retries=2)
 def extract_one(row, assets, config):
