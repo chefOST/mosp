@@ -1,7 +1,8 @@
-"""Detached L4 pipeline: R2 videos -> versioned features -> joint training -> scoring.
+"""Detached L4 pipeline: R2 videos -> training features -> joint training.
 
 All media and extractor weights stay on Modal/R2. Local execution only packages
 code and existing annotation files and submits the pinned run configuration.
+Held-out feature extraction and evaluation require an explicit --evaluate opt-in.
 """
 from __future__ import annotations
 
@@ -66,6 +67,13 @@ def _safe_group(group):
 
 def _run_root(config):
     return WORK / "runs" / _safe_group(config["group"])
+
+
+def _evaluation_requested(config):
+    requested = config.get("evaluate_after_training", False)
+    if type(requested) is not bool:
+        raise ValueError("evaluate_after_training must be an explicit boolean")
+    return requested
 
 
 def _wandb_run(config, stage, dataset=None):
@@ -238,8 +246,9 @@ def dataset_pipeline(dataset, inventory, assets, config):
     from mosp.cloud_data import prepare_training_manifest
     from mosp.data import validate_manifest
     from mosp.pipeline_state import attach_saved_call, completed_feature_index
-    from mosp.runtime import write_json
+    from mosp.runtime import file_sha256, write_json
 
+    evaluate = _evaluation_requested(config)
     volume.reload()
     annotation_root = WORK / "annotations" / config["annotation_revision"]
     gt_ids = set(json.loads((annotation_root / f"annotations/ground_truth/{dataset}/gt_annotations_{dataset.lower()}.json").read_text()))
@@ -264,19 +273,33 @@ def dataset_pipeline(dataset, inventory, assets, config):
         run.summary["error"] = None
         run.summary.update({"phase": "extracting training features", "training_videos": len(train_ids),
                             "test_videos": len(test_ids), "validation_videos": 0,
+                            "evaluation_requested": evaluate,
                             "paper_split_verified": False, "gpu_workers_shared_limit": 4})
         prepared = root / "prepared"
         manifest = prepared / "manifest.json"
-        feature_path = root / "feature-index.json"
-        cached_features = completed_feature_index(
-            feature_path, manifest, root / "training/run.json", dataset=dataset,
-            source_records=records, feature_root=WORK / "features" / assets["recipe_id"] / dataset,
-            annotation_revision=config["annotation_revision"], checkpoint_sha256=assets["checkpoint_sha256"])
+        feature_path = root / ("feature-index.json" if evaluate else "train-feature-index.json")
+        call_path = root / "training-call.json"
+        evidence = root / "training/run.json"
+        if not evidence.exists() and call_path.exists():
+            handoff = json.loads(call_path.read_text())
+            if handoff.get("manifest_sha256"):
+                evidence = call_path
+        # A new handoff pins the manifest before its GPU worker starts. Older
+        # queued calls without this evidence use normal training-cache validation.
+        cached_features = None
+        if evidence.exists():
+            cached_features = completed_feature_index(
+                feature_path, manifest, evidence, dataset=dataset,
+                source_records=records if evaluate else {v: records[v] for v in train_ids},
+                feature_root=WORK / "features" / assets["recipe_id"] / dataset,
+                annotation_revision=config["annotation_revision"], checkpoint_sha256=assets["checkpoint_sha256"])
         if cached_features is not None:
             all_features = cached_features
             run.summary["phase"] = "reusing verified features; reattaching training"
-            run.log({"features/train_complete": len(train_ids), "features/train_total": len(train_ids),
-                     "features/test_complete": len(test_ids), "features/test_total": len(test_ids)})
+            progress = {"features/train_complete": len(train_ids), "features/train_total": len(train_ids)}
+            if evaluate:
+                progress.update({"features/test_complete": len(test_ids), "features/test_total": len(test_ids)})
+            run.log(progress)
         else:
             for result in extract_one.map([records[v] for v in train_ids],
                                           kwargs={"assets": assets, "config": config}, order_outputs=False):
@@ -285,6 +308,7 @@ def dataset_pipeline(dataset, inventory, assets, config):
             volume.reload()
             train_features = {"videos": sorted(feature_rows, key=lambda x: x["video_id"])}
             write_json(root / "train-feature-index.json", train_features)
+            all_features = train_features
             if manifest.exists():
                 validate_manifest(manifest, check_features=True)
             else:
@@ -295,8 +319,8 @@ def dataset_pipeline(dataset, inventory, assets, config):
                                                       annotation_sha256=config["annotation_sha256"],
                                                       action_segment_end="exclusive")
             volume.commit()
-        run.summary["phase"] = "training started; extracting held-out features"
-        call_path = root / "training-call.json"
+        run.summary["phase"] = ("training started; extracting held-out features" if evaluate
+                                else "training features complete; training started")
         if call_path.exists():
             training_call, training_call_id = attach_saved_call(call_path, modal.FunctionCall.from_id)
         else:
@@ -304,11 +328,12 @@ def dataset_pipeline(dataset, inventory, assets, config):
                 raise ValueError("Completed features lack their training handoff; refusing duplicate training")
             training_call = train_dataset.spawn(dataset, str(manifest), config)
             training_call_id = training_call.object_id
-            write_json(call_path, {"call_id": training_call_id})
+            write_json(call_path, {"call_id": training_call_id,
+                                   "manifest_sha256": file_sha256(manifest)})
             volume.commit()
         run.summary["training_call_id"] = training_call_id
-        # Held-out extraction does not consult labels and overlaps GPU training.
-        if cached_features is None:
+        # Only an explicit opt-in may allocate workers for held-out videos.
+        if evaluate and cached_features is None:
             test_rows = []
             for result in extract_one.map([records[v] for v in test_ids],
                                           kwargs={"assets": assets, "config": config}, order_outputs=False):
@@ -320,6 +345,7 @@ def dataset_pipeline(dataset, inventory, assets, config):
             volume.commit()
         artifact = wandb.Artifact(f"{config['group']}-{dataset.lower()}-inputs", type="dataset",
                                   metadata={"features_store": "Cloudflare R2", "recipe_id": assets["recipe_id"],
+                                            "feature_scope": "training_and_held_out" if evaluate else "training_only",
                                             "annotation_revision": config["annotation_revision"]})
         artifact.add_file(str(feature_path), name="feature-index.json")
         artifact.add_file(str(manifest), name="training-manifest.json")
@@ -333,6 +359,8 @@ def dataset_pipeline(dataset, inventory, assets, config):
     finally:
         run.finish(exit_code=0 if succeeded else 1)
     result = training_call.get()
+    if not evaluate:
+        return {"training": result}
     volume.reload()
     completion = root / "evaluation-complete.json"
     if completion.exists():
@@ -353,6 +381,7 @@ def orchestrate(config, recovery_revision=None):
     from mosp.features import load_egoper_model
     from mosp.runtime import write_json
     _safe_group(config["group"])
+    evaluate = _evaluation_requested(config)
     if config["wandb_project"] != WANDB_PROJECT or config["gpu"] != "L4":
         raise ValueError("Unexpected W&B destination or GPU")
     volume.reload()
@@ -365,6 +394,7 @@ def orchestrate(config, recovery_revision=None):
         if previous_error:
             run.summary["recovery/previous_error"] = previous_error
         run.summary["error"] = None
+        run.summary["evaluation_requested"] = evaluate
         if recovery_revision:
             run.summary["recovery/controller_revision"] = recovery_revision
             write_json(root / f"recovery-{recovery_revision[:12]}.json", {
@@ -415,9 +445,10 @@ def orchestrate(config, recovery_revision=None):
         run.finish(exit_code=0 if succeeded else 1)
 
 
-def build_run_config(group=None, epochs=100):
+def build_run_config(group=None, epochs=100, *, evaluate=False):
     """Local metadata-only launch preparation; never opens a video/weight file."""
     from mosp.features import file_sha256
+    _evaluation_requested({"evaluate_after_training": evaluate})
     repository = Path(__file__).resolve().parent
     annotations = repository.parent / "chefOST-data/MOSCATO"
     annotation_revision = subprocess.check_output(
@@ -437,6 +468,7 @@ def build_run_config(group=None, epochs=100):
     if epochs < 1:
         raise ValueError("Epoch budget must be positive")
     return {"group": group, "epochs": epochs, "seed": 0, "gpu": "L4",
+            "evaluate_after_training": evaluate,
             "feature_batch_size": 4, "annotation_revision": annotation_revision,
             "annotation_sha256": hashes, "code_revision": code_revision,
             "wandb_entity": WANDB_ENTITY, "wandb_project": WANDB_PROJECT,
@@ -450,8 +482,8 @@ def build_run_config(group=None, epochs=100):
 
 
 @app.local_entrypoint()
-def main(group: str = "", epochs: int = 100):
-    config = build_run_config(group or None, epochs)
+def main(group: str = "", epochs: int = 100, evaluate: bool = False):
+    config = build_run_config(group or None, epochs, evaluate=evaluate)
     call = orchestrate.spawn(config)
     print(json.dumps({"group": config["group"], "function_call_id": call.object_id,
                       "wandb_project": WANDB_PROJECT}), flush=True)
