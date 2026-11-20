@@ -29,7 +29,7 @@ def stage(tmp_path, monkeypatch):
     inventory = {"videos": [{"dataset": "CMU", "video_id": v} for v in train_ids + test_ids]}
     assets = {"recipe_id": "recipe", "checkpoint_sha256": "b" * 64}
     root = tmp_path / "runs" / config["group"] / "CMU"
-    calls = {"maps": [], "spawns": [], "evaluations": [], "cached": []}
+    calls = {"maps": [], "spawns": [], "cached": []}
     result = {"dataset": "CMU", "checkpoint_path": "preserved-model.pt", "wandb_url": "test"}
     remote_call = SimpleNamespace(object_id="fc-new123", get=lambda: result)
 
@@ -61,10 +61,6 @@ def stage(tmp_path, monkeypatch):
         calls["spawns"].append(args)
         return remote_call
 
-    def evaluate(*args):
-        calls["evaluations"].append(args)
-        return {"dataset": "CMU", "metrics": {"test": True}}
-
     def prepare(annotation_root, dataset, annotation_revision, source, features, output, **kwargs):
         assert {r["video_id"] for r in features["videos"]} == set(train_ids)
         output.mkdir(parents=True)
@@ -89,7 +85,6 @@ def stage(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "_wandb_run", lambda *args: Run())
     monkeypatch.setattr(pipeline, "extract_one", SimpleNamespace(map=extract))
     monkeypatch.setattr(pipeline, "train_dataset", SimpleNamespace(spawn=spawn))
-    monkeypatch.setattr(pipeline, "evaluate_dataset", SimpleNamespace(remote=evaluate))
     monkeypatch.setattr(pipeline.modal.FunctionCall, "from_id", lambda _: remote_call)
     monkeypatch.setattr(cloud_data, "prepare_training_manifest", prepare)
     monkeypatch.setattr(data, "validate_manifest", lambda *args, **kwargs: {})
@@ -98,27 +93,18 @@ def stage(tmp_path, monkeypatch):
                            train_ids=train_ids, test_ids=test_ids, result=result)
 
 
-@pytest.mark.parametrize("explicit", [False, True])
-def test_default_and_legacy_configs_stop_after_training(stage, explicit):
-    if explicit:
-        stage.config["evaluate_after_training"] = False
+@pytest.mark.parametrize("legacy_request", [None, False, True])
+def test_default_and_legacy_configs_stop_after_training(stage, legacy_request):
+    if legacy_request is not None:
+        stage.config["evaluate_after_training"] = legacy_request
     result = pipeline.dataset_pipeline.local("CMU", stage.inventory, stage.assets, stage.config)
     assert result == {"training": stage.result}
     assert stage.calls["maps"] == [stage.train_ids]
     assert len(stage.calls["spawns"]) == 1
-    assert stage.calls["evaluations"] == []
     assert not (stage.root / "feature-index.json").exists()
     handoff = json.loads((stage.root / "training-call.json").read_text())
     manifest = stage.root / "prepared/manifest.json"
     assert handoff["manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
-
-
-def test_explicit_opt_in_extracts_held_out_features_and_evaluates(stage):
-    stage.config["evaluate_after_training"] = True
-    result = pipeline.dataset_pipeline.local("CMU", stage.inventory, stage.assets, stage.config)
-    assert stage.calls["maps"] == [stage.train_ids, stage.test_ids]
-    assert len(stage.calls["evaluations"]) == 1
-    assert "evaluation" in result
 
 
 @pytest.mark.parametrize("queued", [False, True])
@@ -140,20 +126,15 @@ def test_training_only_recovery_uses_train_index_and_retains_full_index(stage, q
         (stage.root / "training/run.json").write_text(json.dumps({"manifest_sha256": sha}))
     result = pipeline.dataset_pipeline.local("CMU", stage.inventory, stage.assets, stage.config)
     assert result == {"training": stage.result}
-    assert not stage.calls["maps"] and not stage.calls["spawns"] and not stage.calls["evaluations"]
+    assert not stage.calls["maps"] and not stage.calls["spawns"]
     assert stage.calls["cached"] == [("train-feature-index.json", set(stage.train_ids),
                                       "training-call.json" if queued else "run.json")]
     assert full.read_bytes() == original_full
 
 
-@pytest.mark.parametrize("bad_value", ["false", 1, None])
-def test_non_boolean_evaluation_opt_in_is_rejected(bad_value):
-    with pytest.raises(ValueError, match="explicit boolean"):
-        pipeline._evaluation_requested({"evaluate_after_training": bad_value})
-
-
-def test_new_run_config_requires_explicit_evaluation_opt_in(monkeypatch):
+def test_new_run_config_has_no_scoring_option(monkeypatch):
     monkeypatch.setattr(pipeline, "annotation_relative_paths", lambda _: [])
     monkeypatch.setattr(pipeline.subprocess, "check_output", lambda *args, **kwargs: "a" * 40)
-    assert pipeline.build_run_config("default")["evaluate_after_training"] is False
-    assert pipeline.build_run_config("opt-in", evaluate=True)["evaluate_after_training"] is True
+    assert "evaluate_after_training" not in pipeline.build_run_config("default")
+    with pytest.raises(TypeError):
+        pipeline.build_run_config("unsupported", evaluate=True)

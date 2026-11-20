@@ -2,7 +2,7 @@
 
 All media and extractor weights stay on Modal/R2. Local execution only packages
 code and existing annotation files and submits the pinned run configuration.
-Held-out feature extraction and evaluation require an explicit --evaluate opt-in.
+This pipeline ends after training; saved prediction outputs are scored in chefOST-data.
 """
 from __future__ import annotations
 
@@ -69,16 +69,9 @@ def _run_root(config):
     return WORK / "runs" / _safe_group(config["group"])
 
 
-def _evaluation_requested(config):
-    requested = config.get("evaluate_after_training", False)
-    if type(requested) is not bool:
-        raise ValueError("evaluate_after_training must be an explicit boolean")
-    return requested
-
-
-def _wandb_run(config, stage, dataset=None, *, group=None):
+def _wandb_run(config, stage, dataset=None):
     import wandb
-    group = config["group"] if group is None else group
+    group = config["group"]
     identity = f"{group}:{stage}:{dataset or 'all'}"
     run = wandb.init(entity=WANDB_ENTITY, project=WANDB_PROJECT,
                      group=group, job_type=stage,
@@ -92,31 +85,6 @@ def _wandb_run(config, stage, dataset=None, *, group=None):
     return run
 
 
-def _evaluation_references(record):
-    """Return references only, including for older completion records with scores."""
-    legacy_metrics = record.get("metrics", {})
-    values = {
-        "dataset": record.get("dataset"),
-        "checkpoint_sha256": record.get("checkpoint_sha256", legacy_metrics.get("checkpoint_sha256")),
-        "annotation_revision": record.get("annotation_revision", legacy_metrics.get("annotation_revision")),
-        "scope": record.get("scope", legacy_metrics.get("scope")),
-        "alignment_audit_path": record.get("alignment_audit_path", legacy_metrics.get("alignment_audit_path")),
-        "predictions_run_url": record.get("predictions_run_url", record.get("wandb_url")),
-        "predictions_artifact": record.get("predictions_artifact"),
-        "metrics_run_url": record.get("metrics_run_url"),
-        "metrics_artifact": record.get("metrics_artifact"),
-        "metrics_group": record.get("metrics_group"),
-    }
-    if any(value is not None and not isinstance(value, str) for value in values.values()):
-        raise ValueError("Evaluation references must contain strings, not nested result data")
-    epoch = record.get("checkpoint_epoch", legacy_metrics.get("checkpoint_epoch"))
-    if epoch is not None:
-        if type(epoch) is not int or epoch < 0:
-            raise ValueError("Checkpoint epoch must be a nonnegative integer")
-        values["checkpoint_epoch"] = epoch
-    return {key: value for key, value in values.items() if value is not None}
-
-
 def _pipeline_references(results):
     """Keep score payloads out of pipeline return values and W&B summaries."""
     output = {}
@@ -126,8 +94,6 @@ def _pipeline_references(results):
         if any(value is not None and not isinstance(value, str) for value in training.values()):
             raise ValueError("Training references must contain strings")
         output[dataset] = {"training": training}
-        if "evaluation" in result:
-            output[dataset]["evaluation"] = _evaluation_references(result["evaluation"])
     return output
 
 
@@ -243,93 +209,6 @@ def train_dataset(dataset, manifest_path, config):
             "wandb_url": result["run_metadata"]["wandb"]["url"]}
 
 
-@app.function(image=image, gpu="L4", cpu=4, memory=32768, volumes={"/work": volume},
-              secrets=secrets, max_containers=2, timeout=86400, startup_timeout=1200, retries=1)
-def evaluate_dataset(dataset, checkpoint, inventory, feature_manifest, config):
-    import wandb
-    from mosp.evaluate import evaluate_checkpoint
-    from mosp.runtime import file_sha256, write_json
-    volume.reload()
-    output = _run_root(config) / dataset / "evaluation"
-    run = _wandb_run(config, "predictions", dataset)
-    succeeded = False
-    try:
-        run.summary["phase"] = "saving held-out predictions"
-        if (output / "metrics.json").exists():
-            metrics = json.loads((output / "metrics.json").read_text())
-        else:
-            metrics = evaluate_checkpoint(checkpoint, WORK / "annotations" / config["annotation_revision"],
-                                          dataset, inventory, feature_manifest, output, device="cuda")
-        checkpoint_sha = file_sha256(checkpoint)
-        if (metrics.get("dataset") != dataset or metrics.get("checkpoint_sha256") != checkpoint_sha
-                or metrics.get("annotation_revision") != config["annotation_revision"]):
-            raise ValueError("Saved evaluation belongs to different model/data inputs")
-        predictions = sorted((output / "predictions").glob("*.npz"))
-        if not predictions:
-            raise ValueError("No prediction outputs are available to publish")
-        prediction_name = f"{config['group']}-{dataset.lower()}-predictions"
-        artifact = wandb.Artifact(prediction_name, type="predictions",
-                                  metadata={"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
-                                            "checkpoint_epoch": metrics.get("checkpoint_epoch"),
-                                            "annotation_revision": config["annotation_revision"],
-                                            "scope": "model predictions and alignment records"})
-        # Explicit membership prevents metrics.json (or other score files) from
-        # being copied into the prediction collection by a directory upload.
-        for prediction in predictions:
-            artifact.add_file(str(prediction), name="predictions/" + prediction.name)
-        artifact.add_file(str(output / "alignment_audit.json"), name="alignment_audit.json")
-        run.log_artifact(artifact, aliases=["final"]).wait()
-        result = {"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
-                  "checkpoint_epoch": metrics.get("checkpoint_epoch"),
-                  "annotation_revision": config["annotation_revision"],
-                  "scope": metrics.get("scope"),
-                  "alignment_audit_path": str(output / "alignment_audit.json"),
-                  "predictions_run_url": run.url, "predictions_artifact": prediction_name + ":final"}
-        run.summary.update({"prediction_videos": len(predictions), "checkpoint_sha256": checkpoint_sha,
-                            "annotation_revision": config["annotation_revision"],
-                            "predictions_artifact": result["predictions_artifact"]})
-        write_json(_run_root(config) / dataset / "predictions-complete.json", result)
-        volume.commit()
-        run.summary["phase"] = "complete"
-        succeeded = True
-    except Exception as exc:
-        run.summary["phase"] = "failed"
-        run.summary["error"] = str(exc)
-        raise
-    finally:
-        run.finish(exit_code=0 if succeeded else 1)
-    # Evaluation remains opt-in; when requested, score payloads have their own
-    # run group, job type, and artifact collection in the same configured project.
-    metrics_group = config["group"] + "-metrics"
-    run = _wandb_run(config, "metrics", dataset, group=metrics_group)
-    succeeded = False
-    try:
-        run.summary["phase"] = "publishing evaluation metrics"
-        run.summary["metrics"] = metrics
-        run.summary["predictions_run_url"] = result["predictions_run_url"]
-        run.summary["predictions_artifact"] = result["predictions_artifact"]
-        metric_name = f"{config['group']}-{dataset.lower()}-metrics"
-        artifact = wandb.Artifact(metric_name, type="evaluation-metrics",
-                                  metadata={"dataset": dataset, "checkpoint_sha256": checkpoint_sha,
-                                            "checkpoint_epoch": metrics.get("checkpoint_epoch"),
-                                            "annotation_revision": config["annotation_revision"]})
-        artifact.add_file(str(output / "metrics.json"), name="metrics.json")
-        run.log_artifact(artifact, aliases=["final"]).wait()
-        result.update(metrics_run_url=run.url, metrics_artifact=metric_name + ":final",
-                      metrics_group=metrics_group)
-        write_json(_run_root(config) / dataset / "evaluation-complete.json", result)
-        volume.commit()
-        run.summary["phase"] = "complete"
-        succeeded = True
-        return result
-    except Exception as exc:
-        run.summary["phase"] = "failed"
-        run.summary["error"] = str(exc)
-        raise
-    finally:
-        run.finish(exit_code=0 if succeeded else 1)
-
-
 @app.function(image=image, cpu=4, memory=16384, volumes={"/work": volume}, secrets=secrets,
               max_containers=2, timeout=86400, retries=1)
 def dataset_pipeline(dataset, inventory, assets, config):
@@ -339,7 +218,6 @@ def dataset_pipeline(dataset, inventory, assets, config):
     from mosp.pipeline_state import attach_saved_call, completed_feature_index
     from mosp.runtime import file_sha256, write_json
 
-    evaluate = _evaluation_requested(config)
     volume.reload()
     annotation_root = WORK / "annotations" / config["annotation_revision"]
     gt_ids = set(json.loads((annotation_root / f"annotations/ground_truth/{dataset}/gt_annotations_{dataset.lower()}.json").read_text()))
@@ -364,11 +242,10 @@ def dataset_pipeline(dataset, inventory, assets, config):
         run.summary["error"] = None
         run.summary.update({"phase": "extracting training features", "training_videos": len(train_ids),
                             "test_videos": len(test_ids), "validation_videos": 0,
-                            "evaluation_requested": evaluate,
                             "paper_split_verified": False, "gpu_workers_shared_limit": 4})
         prepared = root / "prepared"
         manifest = prepared / "manifest.json"
-        feature_path = root / ("feature-index.json" if evaluate else "train-feature-index.json")
+        feature_path = root / "train-feature-index.json"
         call_path = root / "training-call.json"
         evidence = root / "training/run.json"
         if not evidence.exists() and call_path.exists():
@@ -381,15 +258,12 @@ def dataset_pipeline(dataset, inventory, assets, config):
         if evidence.exists():
             cached_features = completed_feature_index(
                 feature_path, manifest, evidence, dataset=dataset,
-                source_records=records if evaluate else {v: records[v] for v in train_ids},
+                source_records={v: records[v] for v in train_ids},
                 feature_root=WORK / "features" / assets["recipe_id"] / dataset,
                 annotation_revision=config["annotation_revision"], checkpoint_sha256=assets["checkpoint_sha256"])
         if cached_features is not None:
-            all_features = cached_features
             run.summary["phase"] = "reusing verified features; reattaching training"
             progress = {"features/train_complete": len(train_ids), "features/train_total": len(train_ids)}
-            if evaluate:
-                progress.update({"features/test_complete": len(test_ids), "features/test_total": len(test_ids)})
             run.log(progress)
         else:
             for result in extract_one.map([records[v] for v in train_ids],
@@ -399,7 +273,6 @@ def dataset_pipeline(dataset, inventory, assets, config):
             volume.reload()
             train_features = {"videos": sorted(feature_rows, key=lambda x: x["video_id"])}
             write_json(root / "train-feature-index.json", train_features)
-            all_features = train_features
             if manifest.exists():
                 validate_manifest(manifest, check_features=True)
             else:
@@ -410,8 +283,7 @@ def dataset_pipeline(dataset, inventory, assets, config):
                                                       annotation_sha256=config["annotation_sha256"],
                                                       action_segment_end="exclusive")
             volume.commit()
-        run.summary["phase"] = ("training started; extracting held-out features" if evaluate
-                                else "training features complete; training started")
+        run.summary["phase"] = "training features complete; training started"
         if call_path.exists():
             training_call, training_call_id = attach_saved_call(call_path, modal.FunctionCall.from_id)
         else:
@@ -423,20 +295,9 @@ def dataset_pipeline(dataset, inventory, assets, config):
                                    "manifest_sha256": file_sha256(manifest)})
             volume.commit()
         run.summary["training_call_id"] = training_call_id
-        # Only an explicit opt-in may allocate workers for held-out videos.
-        if evaluate and cached_features is None:
-            test_rows = []
-            for result in extract_one.map([records[v] for v in test_ids],
-                                          kwargs={"assets": assets, "config": config}, order_outputs=False):
-                test_rows.append(result)
-                run.log({"features/test_complete": len(test_rows), "features/test_total": len(test_ids)})
-            volume.reload()
-            all_features = {"videos": sorted(feature_rows + test_rows, key=lambda x: x["video_id"])}
-            write_json(feature_path, all_features)
-            volume.commit()
         artifact = wandb.Artifact(f"{config['group']}-{dataset.lower()}-inputs", type="dataset",
                                   metadata={"features_store": "Cloudflare R2", "recipe_id": assets["recipe_id"],
-                                            "feature_scope": "training_and_held_out" if evaluate else "training_only",
+                                            "feature_scope": "training_only",
                                             "annotation_revision": config["annotation_revision"]})
         artifact.add_file(str(feature_path), name="feature-index.json")
         artifact.add_file(str(manifest), name="training-manifest.json")
@@ -450,19 +311,7 @@ def dataset_pipeline(dataset, inventory, assets, config):
     finally:
         run.finish(exit_code=0 if succeeded else 1)
     result = training_call.get()
-    if not evaluate:
-        return {"training": result}
-    volume.reload()
-    completion = root / "evaluation-complete.json"
-    if completion.exists():
-        from mosp.runtime import file_sha256
-        evaluation = _evaluation_references(json.loads(completion.read_text()))
-        if (evaluation.get("dataset") != dataset
-                or evaluation.get("checkpoint_sha256") != file_sha256(result["checkpoint_path"])):
-            raise ValueError("Completed evaluation belongs to a different checkpoint")
-    else:
-        evaluation = evaluate_dataset.remote(dataset, result["checkpoint_path"], inventory, all_features, config)
-    return {"training": result, "evaluation": _evaluation_references(evaluation)}
+    return {"training": result}
 
 
 @app.function(image=coordinator_image, cpu=2, memory=8192, volumes={"/work": volume},
@@ -472,7 +321,6 @@ def orchestrate(config, recovery_revision=None):
     from mosp.features import load_egoper_model
     from mosp.runtime import write_json
     _safe_group(config["group"])
-    evaluate = _evaluation_requested(config)
     if config["wandb_project"] != WANDB_PROJECT or config["gpu"] != "L4":
         raise ValueError("Unexpected W&B destination or GPU")
     volume.reload()
@@ -485,7 +333,6 @@ def orchestrate(config, recovery_revision=None):
         if previous_error:
             run.summary["recovery/previous_error"] = previous_error
         run.summary["error"] = None
-        run.summary["evaluation_requested"] = evaluate
         if recovery_revision:
             run.summary["recovery/controller_revision"] = recovery_revision
             write_json(root / f"recovery-{recovery_revision[:12]}.json", {
@@ -536,10 +383,9 @@ def orchestrate(config, recovery_revision=None):
         run.finish(exit_code=0 if succeeded else 1)
 
 
-def build_run_config(group=None, epochs=100, *, evaluate=False):
+def build_run_config(group=None, epochs=100):
     """Local metadata-only launch preparation; never opens a video/weight file."""
     from mosp.features import file_sha256
-    _evaluation_requested({"evaluate_after_training": evaluate})
     repository = Path(__file__).resolve().parent
     annotations = repository.parent / "chefOST-data/MOSCATO"
     annotation_revision = subprocess.check_output(
@@ -559,7 +405,6 @@ def build_run_config(group=None, epochs=100, *, evaluate=False):
     if epochs < 1:
         raise ValueError("Epoch budget must be positive")
     return {"group": group, "epochs": epochs, "seed": 0, "gpu": "L4",
-            "evaluate_after_training": evaluate,
             "feature_batch_size": 4, "annotation_revision": annotation_revision,
             "annotation_sha256": hashes, "code_revision": code_revision,
             "wandb_entity": WANDB_ENTITY, "wandb_project": WANDB_PROJECT,
@@ -573,8 +418,8 @@ def build_run_config(group=None, epochs=100, *, evaluate=False):
 
 
 @app.local_entrypoint()
-def main(group: str = "", epochs: int = 100, evaluate: bool = False):
-    config = build_run_config(group or None, epochs, evaluate=evaluate)
+def main(group: str = "", epochs: int = 100):
+    config = build_run_config(group or None, epochs)
     call = orchestrate.spawn(config)
     print(json.dumps({"group": config["group"], "function_call_id": call.object_id,
                       "wandb_project": WANDB_PROJECT}), flush=True)
