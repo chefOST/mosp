@@ -1,13 +1,11 @@
-"""Generate a tiny synthetic dataset in the exact MOSCATO on-disk schema.
+"""Generate a tiny synthetic dataset in the MOSCATO on-disk schema.
 
-This lets you smoke-test the full train -> evaluate pipeline before downloading
-the real ~10 GB dataset.  The synthetic labels are *correlated* with the
-features (plus noise), so training loss should drop and metrics should land
-well above chance -- confirming the wiring end-to-end.
+The labels are correlated with the features so the training loss can be
+checked without downloading the full dataset. Prediction scoring is owned by
+https://github.com/chefOST/chefOST-data.
 
     python -m moscato.make_synth --out ./synth_dataset
-    python -m moscato.train    --data_root ./synth_dataset --dataset CMU --use_sai --epochs 15 --out runs/synth.pt
-    python -m moscato.evaluate --data_root ./synth_dataset --dataset CMU --ckpt runs/synth.pt
+    python -m moscato.train --data_root ./synth_dataset --dataset CMU --use_sai --epochs 15 --out runs/synth.pt
 """
 
 from __future__ import annotations
