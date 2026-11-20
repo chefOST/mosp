@@ -89,6 +89,10 @@ def test_prediction_exports_probabilities_without_annotations_or_scores(checkpoi
         assert np.isfinite(arrays["state_probabilities"]).all()
 
 
-def test_scoring_modules_are_not_part_of_package():
-    assert importlib.util.find_spec("mosp.evaluate") is None
-    assert importlib.util.find_spec("mosp.metrics") is None
+def test_scoring_is_not_imported_by_training_or_prediction():
+    import ast
+    import inspect
+    for module in (train, predict):
+        tree = ast.parse(inspect.getsource(module))
+        imported = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        assert not any(name and name.rsplit(".", 1)[-1] in {"evaluate", "metrics"} for name in imported)

@@ -1,7 +1,8 @@
 {
   "entity": "chefOST",
-  "default_project": "experiments",
+  "default_project": "full_evals",
   "projects": {
-    "experiments": "mosp-experiments"
+    "experiments": "mosp-experiments",
+    "full_evals": "MOSP - full evals"
   }
 }
